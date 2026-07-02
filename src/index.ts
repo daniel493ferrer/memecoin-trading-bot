@@ -1,0 +1,197 @@
+import { loadConfig } from './config.js';
+import { log } from './logger.js';
+import { Rpc } from './rpc.js';
+import { WalletManager } from './wallets.js';
+import { PumpPortalEngine } from './swap/pumpportal.js';
+import { JupiterEngine } from './swap/jupiter.js';
+import { PumpFunStream } from './discovery/pumpfun.js';
+import { RaydiumListener } from './discovery/raydium.js';
+import { SafetyChecker } from './safety.js';
+import { PositionStore } from './positions.js';
+import { Trader } from './trader.js';
+import { ExitMonitor } from './monitor.js';
+import { CandidateObserver } from './observation.js';
+import { createStrategy } from './strategies/index.js';
+import type { TokenCandidate } from './types.js';
+import { fmtSol, short } from './utils.js';
+
+const BANNER = `
+  ┌─────────────────────────────────────────────┐
+  │  Memecoin Trading Bot                       │
+  └─────────────────────────────────────────────┘`;
+
+async function main(): Promise<void> {
+  console.log(BANNER);
+
+  const { config, env } = loadConfig();
+
+  const wallets = new WalletManager(config.wallets);
+  wallets.load();
+
+  const rpc = new Rpc(env.heliusApiKey);
+  const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
+  const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
+  const safety = new SafetyChecker(rpc, config.filters);
+
+  const store = new PositionStore();
+  store.load();
+
+  const trader = new Trader(rpc, wallets, pumpEngine, jupiterEngine, store, config);
+
+  // Migration events stay subscribed regardless of sniping settings: any open
+  // pump.fun position needs them to switch its pricing/execution to the AMM.
+  const pumpStream = new PumpFunStream(config.endpoints.pumpPortalWs, {
+    newTokens: config.discovery.pumpfun.enabled && config.discovery.pumpfun.snipeNewTokens,
+    migrations: true,
+  });
+  const raydium = new RaydiumListener(rpc);
+  const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
+  const observer = new CandidateObserver(pumpStream, config.observation);
+  const strategy = createStrategy(config.strategy.name);
+
+  // ------------------------------------------------------------- buy pipeline
+
+  const seenMints = new Set<string>();
+  let lastBuyAt = 0;
+  let buying = false;
+
+  async function onCandidate(candidate: TokenCandidate): Promise<void> {
+    if (seenMints.has(candidate.mint)) return;
+
+    // Gate cheap checks first, in order of cost.
+    if (store.openCount >= config.entry.maxOpenPositions) return;
+    if (store.hasMint(candidate.mint)) return;
+    if ((Date.now() - lastBuyAt) / 1000 < config.entry.buyCooldownSeconds) return;
+
+    seenMints.add(candidate.mint);
+    if (seenMints.size > 10_000) {
+      const oldest = seenMints.values().next().value;
+      if (oldest) seenMints.delete(oldest);
+    }
+
+    const rejected = safety.prefilter(candidate);
+    if (rejected) {
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
+      return;
+    }
+
+    const observation = await observer.observe(candidate);
+    if (!observation.ok) {
+      log.info(
+        `skip ${candidate.symbol} (${short(candidate.mint)}): observation rejected — ${observation.reasons.join('; ')}`,
+      );
+      return;
+    }
+    log.info(
+      `${candidate.symbol}: observation passed ${observation.score}/100 — ` +
+      `${observation.trades} trades, ${observation.uniqueBuyers} buyers, ` +
+      `${observation.buyVolumeSol.toFixed(3)} SOL buy volume, ` +
+      `${observation.priceChangePct >= 0 ? '+' : ''}${observation.priceChangePct.toFixed(1)}% price`,
+    );
+
+    const decision = await strategy.evaluate({ candidate, observation });
+    if (!decision.buy) {
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): strategy ${strategy.name} — ${decision.reason}`);
+      return;
+    }
+
+    // Re-check mutable portfolio gates after the observation window. Multiple
+    // candidates can be observed concurrently, but only one may enter safely.
+    if (buying) return;
+    if (store.openCount >= config.entry.maxOpenPositions) return;
+    if (store.hasMint(candidate.mint)) return;
+    if ((Date.now() - lastBuyAt) / 1000 < config.entry.buyCooldownSeconds) return;
+
+    buying = true;
+    try {
+      const report = await safety.check(candidate);
+      if (!report.ok) {
+        log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${report.reasons.join('; ')}`);
+        return;
+      }
+
+      log.info(
+        `sniping ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — ${fmtSol(config.entry.buyAmountSol)}`,
+      );
+      const position = await trader.buy(candidate, report.decimals);
+      if (position) {
+        lastBuyAt = Date.now();
+        monitor.track(position);
+      }
+    } catch (err) {
+      log.error(`candidate pipeline error for ${candidate.symbol}: ${(err as Error).message}`);
+    } finally {
+      buying = false;
+    }
+  }
+
+  pumpStream.on('newToken', (c: TokenCandidate) => {
+    if (config.discovery.pumpfun.snipeNewTokens) void onCandidate(c);
+  });
+
+  pumpStream.on('migration', (mint: string) => {
+    // Migration sniping: buy tokens that just graduated (proven demand),
+    // unless we already hold them — the monitor handles that case.
+    if (!config.discovery.pumpfun.snipeMigrations || store.hasMint(mint)) return;
+    void onCandidate({
+      mint,
+      symbol: short(mint),
+      name: 'pump.fun migration',
+      source: 'pumpfun-migration',
+      venue: 'amm',
+      discoveredAt: Date.now(),
+    });
+  });
+
+  raydium.on('newPool', (c: TokenCandidate) => void onCandidate(c));
+
+  // ------------------------------------------------------------------ startup
+
+  if (
+    config.discovery.pumpfun.enabled ||
+    (config.observation.enabled && config.discovery.raydium.enabled) ||
+    store.open.some((p) => p.venue === 'pump')
+  ) {
+    pumpStream.start();
+  }
+  if (config.discovery.raydium.enabled) {
+    raydium.start();
+  }
+  monitor.start();
+
+  log.ok(
+    `bot running — ${wallets.count} wallet(s), buy size ${fmtSol(config.entry.buyAmountSol)}, ` +
+      `max ${config.entry.maxOpenPositions} open position(s)`,
+  );
+
+  // Periodic status line so long sessions stay legible.
+  setInterval(() => {
+    const open = store.open;
+    if (open.length === 0) return;
+    const summary = open
+      .map((p) => `${p.symbol}@${((Date.now() - p.openedAt) / 1000).toFixed(0)}s`)
+      .join(', ');
+    log.info(`open positions (${open.length}): ${summary}`);
+  }, 60_000);
+
+  // ------------------------------------------------------------- shutdown
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log.info('shutting down — open positions are saved and will resume on restart');
+    monitor.stop();
+    pumpStream.stop();
+    await raydium.stop();
+    store.save();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
+}
+
+main().catch((err) => {
+  log.error((err as Error).message);
+  process.exit(1);
+});

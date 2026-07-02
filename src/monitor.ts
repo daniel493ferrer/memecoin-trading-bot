@@ -1,0 +1,220 @@
+import type { BotConfig } from './config.js';
+import type { PositionStore } from './positions.js';
+import type { Trader } from './trader.js';
+import type { JupiterEngine } from './swap/jupiter.js';
+import type { PumpFunStream } from './discovery/pumpfun.js';
+import type { Position, PumpTradeEvent } from './types.js';
+import { log } from './logger.js';
+import { fmtPct, rawToUi, short } from './utils.js';
+
+/** Consecutive failed price reads on an AMM position before we assume a rug. */
+const MAX_PRICE_FAILURES = 5;
+
+/**
+ * Watches every open position and fires the configured exit rules:
+ * take-profit ladder, stop loss, trailing stop, max-hold timeout,
+ * dev-sell exit, and migration handling.
+ *
+ * Pricing:
+ *  - pump venue: pushed in real time from bonding-curve trade events
+ *  - amm venue: pulled by quoting a full liquidation via Jupiter
+ */
+export class ExitMonitor {
+  private lastPumpPrice = new Map<string, number>();
+  private priceFailures = new Map<string, number>();
+  private timer: NodeJS.Timeout | null = null;
+  private ticking = false;
+  /** Positions with a sell currently in flight — prevents double-firing rules. */
+  private selling = new Set<string>();
+
+  constructor(
+    private readonly store: PositionStore,
+    private readonly trader: Trader,
+    private readonly jupiter: JupiterEngine,
+    private readonly pumpStream: PumpFunStream,
+    private readonly config: BotConfig,
+  ) {}
+
+  start(): void {
+    this.pumpStream.on('trade', (event: PumpTradeEvent) => this.onPumpTrade(event));
+    this.pumpStream.on('migration', (mint: string) => this.onMigration(mint));
+
+    // Resume price feeds for positions restored from disk.
+    for (const p of this.store.open) {
+      if (p.venue === 'pump') this.pumpStream.watchToken(p.mint);
+    }
+
+    this.timer = setInterval(() => {
+      if (this.ticking) return;
+      this.ticking = true;
+      this.tick()
+        .catch((err) => log.warn(`monitor tick error: ${(err as Error).message}`))
+        .finally(() => { this.ticking = false; });
+    }, this.config.exit.priceCheckIntervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** Called by the orchestrator right after a buy fills. */
+  track(position: Position): void {
+    if (position.venue === 'pump') this.pumpStream.watchToken(position.mint);
+  }
+
+  // ---------------------------------------------------------------- pricing
+
+  private onPumpTrade(event: PumpTradeEvent): void {
+    this.lastPumpPrice.set(event.mint, event.price);
+
+    // Dev-sell exit: creator dumping is the strongest rug signal on pump.fun.
+    if (!this.config.exit.exitOnDevSell || event.txType !== 'sell') return;
+    for (const p of this.store.open) {
+      if (p.mint === event.mint && p.creator && p.creator === event.trader) {
+        log.warn(`dev sell detected on ${p.symbol} — exiting immediately`);
+        void this.exit(p, 'dev-sell');
+      }
+    }
+  }
+
+  private onMigration(mint: string): void {
+    for (const p of this.store.open) {
+      if (p.mint !== mint) continue;
+      if (this.config.exit.sellOnMigration) {
+        log.info(`${p.symbol} migrated — selling per config`);
+        void this.exit(p, 'migration');
+      } else {
+        // Keep the position; switch pricing + execution to the AMM path.
+        log.info(`${p.symbol} migrated — now managed via Jupiter`);
+        p.venue = 'amm';
+        this.store.update(p);
+        this.pumpStream.unwatchToken(mint);
+      }
+    }
+  }
+
+  private async currentPrice(position: Position): Promise<number | null> {
+    if (position.venue === 'pump') {
+      return this.lastPumpPrice.get(position.mint) ?? null;
+    }
+    const remaining = BigInt(position.tokensRawRemaining);
+    const value = await this.jupiter.sellValueSol(
+      position.mint,
+      remaining,
+      this.config.entry.slippageBps,
+    );
+    if (value === null) return null;
+    const ui = rawToUi(remaining, position.tokenDecimals);
+    return ui > 0 ? value / ui : null;
+  }
+
+  // ------------------------------------------------------------- rule engine
+
+  private async tick(): Promise<void> {
+    for (const position of this.store.open) {
+      if (this.selling.has(position.id)) continue;
+      try {
+        await this.evaluate(position);
+      } catch (err) {
+        log.warn(`evaluate ${position.symbol}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  private async evaluate(position: Position): Promise<void> {
+    const exit = this.config.exit;
+
+    // Time stop fires even when we cannot price the token.
+    const ageSec = (Date.now() - position.openedAt) / 1000;
+    if (exit.maxHoldSeconds > 0 && ageSec > exit.maxHoldSeconds) {
+      log.info(`${position.symbol}: max hold time reached (${Math.round(ageSec)}s)`);
+      return this.exit(position, 'max-hold');
+    }
+
+    const price = await this.currentPrice(position);
+    if (price === null) {
+      // AMM positions that repeatedly fail to quote have likely lost their
+      // liquidity — try to salvage whatever is left, then close the book.
+      if (position.venue === 'amm') {
+        const fails = (this.priceFailures.get(position.id) ?? 0) + 1;
+        this.priceFailures.set(position.id, fails);
+        if (fails >= MAX_PRICE_FAILURES) {
+          log.warn(`${position.symbol}: no route ${fails}x — treating as rugged`);
+          return this.exit(position, 'rugged');
+        }
+      }
+      return;
+    }
+    this.priceFailures.delete(position.id);
+
+    const multiple = price / position.entryPrice;
+    if (price > position.peakPrice) {
+      position.peakPrice = price;
+      this.store.update(position);
+    }
+
+    // 1. Stop loss.
+    if (multiple <= 1 - exit.stopLossPct / 100) {
+      log.info(`${position.symbol}: stop loss hit at ${fmtPct((multiple - 1) * 100)}`);
+      return this.exit(position, 'stop-loss');
+    }
+
+    // 2. Trailing stop (activates once, then follows the peak).
+    if (exit.trailingStop.enabled) {
+      if (!position.trailingActive && multiple >= exit.trailingStop.activateAtMultiple) {
+        position.trailingActive = true;
+        this.store.update(position);
+        log.info(`${position.symbol}: trailing stop armed at ${multiple.toFixed(2)}x`);
+      }
+      if (position.trailingActive) {
+        const trigger = position.peakPrice * (1 - exit.trailingStop.trailPct / 100);
+        if (price <= trigger) {
+          log.info(
+            `${position.symbol}: trailing stop hit (peak ${(position.peakPrice / position.entryPrice).toFixed(2)}x → now ${multiple.toFixed(2)}x)`,
+          );
+          return this.exit(position, 'trailing-stop');
+        }
+      }
+    }
+
+    // 3. Take-profit ladder (rungs sorted ascending at config load).
+    for (let i = 0; i < exit.takeProfits.length; i++) {
+      const tp = exit.takeProfits[i];
+      if (position.takeProfitsFilled.includes(i) || multiple < tp.multiple) continue;
+
+      log.info(`${position.symbol}: take-profit ${tp.multiple}x hit at ${multiple.toFixed(2)}x`);
+      this.selling.add(position.id);
+      try {
+        const sold = await this.trader.sell(position, tp.sellPct, 'take-profit');
+        if (sold) {
+          position.takeProfitsFilled.push(i);
+          // If the final rung sells 100%, sell() already finalized the position.
+          if (position.status === 'open') this.store.update(position);
+        }
+      } finally {
+        this.selling.delete(position.id);
+      }
+      if (position.status !== 'open') return;
+      break; // one rung per tick; the next tick handles further rungs
+    }
+  }
+
+  /** Full exit — sells 100% and closes the position. */
+  private async exit(position: Position, reason: Parameters<Trader['sell']>[2]): Promise<void> {
+    if (this.selling.has(position.id)) return;
+    this.selling.add(position.id);
+    try {
+      const sold = await this.trader.sell(position, 100, reason);
+      if (!sold && reason === 'rugged') {
+        // Nothing sellable left — close the book at whatever was realized.
+        this.trader.finalize(position, 'rugged');
+      }
+      if (position.status !== 'open' && position.venue === 'pump') {
+        this.pumpStream.unwatchToken(position.mint);
+      }
+    } finally {
+      this.selling.delete(position.id);
+    }
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "discovery": {
+    "pumpfun": {
+      "enabled": true,
+      "snipeNewTokens": true,
+      "snipeMigrations": false
+    },
+    "raydium": {
+      "enabled": true
+    }
+  },
+  "filters": {
+    "symbolBlacklist": ["test", "scam", "rug"],
+    "symbolWhitelist": [],
+    "minDevBuySol": 0.05,
+    "maxDevBuySol": 3,
+    "minInitialLiquiditySol": 5,
+    "requireMintAuthorityRevoked": true,
+    "requireFreezeAuthorityRevoked": true,
+    "maxTop10HolderPct": 35
+  },
+  "observation": {
+    "enabled": true,
+    "durationSeconds": 20,
+    "maxConcurrentCandidates": 25,
+    "minTrades": 5,
+    "minUniqueBuyers": 3,
+    "minBuyVolumeSol": 0.2,
+    "minBuySellRatio": 1.5,
+    "maxSingleBuyerPct": 60,
+    "minPriceChangePct": 0,
+    "minScore": 70
+  },
+  "strategy": {
+    "name": "default"
+  },
+  "entry": {
+    "buyAmountSol": 0.03,
+    "slippageBps": 2000,
+    "priorityFeeSol": 0.0007,
+    "maxOpenPositions": 4,
+    "buyCooldownSeconds": 15,
+    "routeTimeoutSeconds": 45
+  },
+  "exit": {
+    "takeProfits": [
+      { "multiple": 1.8, "sellPct": 40 },
+      { "multiple": 3.0, "sellPct": 40 }
+    ],
+    "stopLossPct": 30,
+    "trailingStop": {
+      "enabled": true,
+      "activateAtMultiple": 1.5,
+      "trailPct": 20
+    },
+    "maxHoldSeconds": 1200,
+    "exitOnDevSell": true,
+    "sellOnMigration": false,
+    "priceCheckIntervalMs": 3500
+  },
+  "wallets": {
+    "file": "wallets.json",
+    "rotation": "round-robin",
+    "minSolReserve": 0.01
+  },
+  "endpoints": {
+    "jupiterBase": "https://lite-api.jup.ag",
+    "pumpPortalWs": "wss://pumpportal.fun/api/data",
+    "pumpPortalTrade": "https://pumpportal.fun/api/trade-local"
+  }
+}

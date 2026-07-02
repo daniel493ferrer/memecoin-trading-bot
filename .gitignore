@@ -1,0 +1,11 @@
+# secrets — never commit these
+.env
+wallets.json
+
+# runtime state
+positions.json
+logs/
+
+# deps / build
+node_modules/
+dist/

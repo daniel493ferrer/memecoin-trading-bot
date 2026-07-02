@@ -1,0 +1,45 @@
+{
+  "name": "memecoin-trading-bot",
+  "version": "1.0.0",
+  "description": "Strategy-first Solana memecoin trading bot with plug-in entry strategies, live token discovery, safety checks, and automated exits.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "solana",
+    "memecoin",
+    "trading-bot",
+    "pumpfun",
+    "raydium",
+    "sniper",
+    "helius",
+    "jupiter"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/slightlyuseless/memecoin-trading-bot.git"
+  },
+  "homepage": "https://github.com/slightlyuseless/memecoin-trading-bot#readme",
+  "bugs": {
+    "url": "https://github.com/slightlyuseless/memecoin-trading-bot/issues"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

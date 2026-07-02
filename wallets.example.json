@@ -1,0 +1,4 @@
+[
+  { "name": "main", "privateKey": "YOUR_BASE58_PRIVATE_KEY_HERE" },
+  { "name": "alt-1", "privateKey": "ANOTHER_BASE58_PRIVATE_KEY_HERE" }
+]
