@@ -22,9 +22,7 @@ export class Rpc {
 
   /**
    * Send a signed transaction and poll for confirmation, re-broadcasting every
-   * ~2s until it lands or the timeout expires. Re-broadcasting the same signed
-   * tx is safe (identical signature) and dramatically improves land rates
-   * during congestion.
+   * ~2s until it lands or the timeout expires.
    */
   async sendAndConfirm(tx: VersionedTransaction, timeoutMs = 45_000): Promise<string> {
     const raw = Buffer.from(tx.serialize());
@@ -42,7 +40,6 @@ export class Rpc {
           });
         } catch (err) {
           const msg = (err as Error).message ?? '';
-          // "already processed" means an earlier broadcast landed — keep polling.
           if (!msg.includes('already been processed')) {
             log.warn(`broadcast error for ${short(signature)}: ${msg.slice(0, 160)}`);
           }
@@ -51,54 +48,52 @@ export class Rpc {
 
       let status;
       try {
-        status = (await this.connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+        status = (
+          await this.connection.getSignatureStatuses([signature], {
+            searchTransactionHistory: true,
+          })
+        ).value[0];
       } catch (err) {
-        log.warn(`confirmation poll error for ${short(signature)}: ${(err as Error).message.slice(0, 160)}`);
+        log.warn(
+          `confirmation poll error for ${short(signature)}: ${(err as Error).message.slice(0, 160)}`,
+        );
         await sleep(700);
         continue;
       }
+
       if (status?.err) {
-        throw new Error(`transaction ${short(signature)} failed on-chain: ${JSON.stringify(status.err)}`);
+        throw new Error(
+          `transaction ${short(signature)} failed on-chain: ${JSON.stringify(status.err)}`,
+        );
       }
-      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+      if (
+        status?.confirmationStatus === 'confirmed' ||
+        status?.confirmationStatus === 'finalized'
+      ) {
         return signature;
       }
       await sleep(700);
     }
 
-    throw new Error(`transaction ${short(signature)} not confirmed within ${timeoutMs / 1000}s`);
+    throw new Error(
+      `transaction ${short(signature)} not confirmed within ${timeoutMs / 1000}s`,
+    );
   }
 
-  /** Net SOL balance delta for the owner in a confirmed transaction. */
+  /**
+   * Net SOL cash-flow delta for the owner in a confirmed transaction.
+   * Negative = SOL left the wallet; positive = SOL entered the wallet.
+   * This includes the transaction fee because it is derived from pre/post
+   * lamport balances.
+   */
   async getSolBalanceDelta(signature: string, owner: PublicKey): Promise<number | null> {
     for (let attempt = 0; attempt < 6; attempt++) {
-      const tx = await this.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      }).catch(() => null);
-
-      if (tx?.meta) {
-        const index = tx.transaction.message.accountKeys.findIndex(
-          (account) => account.pubkey.equals(owner),
-        );
-        if (index >= 0) {
-          return (tx.meta.postBalances[index] - tx.meta.preBalances[index]) / 1e9;
-        }
-      }
-
-      await sleep(500);
-    }
-
-    return null;
-  }
-
-  /** Net SOL balance delta for the owner in a confirmed transaction. */
-  async getSolBalanceDelta(signature: string, owner: PublicKey): Promise<number | null> {
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const tx = await this.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      }).catch(() => null);
+      const tx = await this.connection
+        .getParsedTransaction(signature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: 'confirmed',
+        })
+        .catch(() => null);
 
       if (tx?.meta) {
         const index = tx.transaction.message.accountKeys.findIndex(
@@ -123,11 +118,10 @@ export class Rpc {
         mint: new PublicKey(mint),
       });
     } catch (err) {
-      // Mints only seconds old can be unknown to the RPC at this commitment —
-      // the owner cannot hold a token that does not exist yet.
       if ((err as Error).message?.includes('could not find mint')) return 0n;
       throw err;
     }
+
     let total = 0n;
     for (const { account } of accounts.value) {
       total += BigInt(account.data.parsed.info.tokenAmount.amount as string);
