@@ -60,6 +60,13 @@ export class CandidateObserver {
   }
 
   async observe(candidate: TokenCandidate): Promise<ObservationReport> {
+    // This observer is fed by PumpPortal's token-trade stream. Do not wait
+    // through the full observation window for AMM candidates with no matching
+    // flow source; they need a venue-specific observer before being tradable.
+    if (candidate.venue !== 'pump') {
+      return this.emptyReport(false, ['AMM flow observation unavailable']);
+    }
+
     if (!this.config.enabled) {
       return this.emptyReport(true, []);
     }
