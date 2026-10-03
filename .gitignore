@@ -5,6 +5,7 @@ wallets.json
 # runtime state
 positions.json
 logs/
+data/
 
 # deps / build
 node_modules/
