@@ -113,10 +113,6 @@ export class Trader {
     const sellRaw = pct >= 100 ? remaining : (remaining * BigInt(Math.floor(pct * 100))) / 10_000n;
     if (sellRaw <= 0n) return false;
 
-    // Estimate proceeds before selling so PnL logs stay meaningful even
-    // when the venue is a bonding curve.
-    const estValue = await this.jupiter.sellValueSol(position.mint, sellRaw, this.config.entry.slippageBps);
-
     // Capture the wallet balance before execution. A wallet may have tokens of
     // this mint that are not owned by this tracked position.
     const balanceBefore = await this.rpc.getTokenBalanceRaw(wallet.pubkey, position.mint);
@@ -147,14 +143,13 @@ export class Trader {
     }
     const trackedRemaining = actualSold >= remaining ? 0n : remaining - actualSold;
     position.tokensRawRemaining = trackedRemaining.toString();
-    const estimatedActualValue = estValue === null
-      ? null
-      : estValue * (Number(actualSold) / Number(sellRaw));
-    position.solReceived += estimatedActualValue ?? 0;
+    const solDelta = await this.rpc.getSolBalanceDelta(signature, wallet.pubkey);
+    const actualReceived = solDelta !== null && solDelta > 0 ? solDelta : 0;
+    position.solReceived += actualReceived;
 
     const soldUi = rawToUi(actualSold, position.tokenDecimals);
     log.trade(
-      `SOLD ${pct.toFixed(0)}% of ${position.symbol} (${reason}) — ~${fmtSol(estimatedActualValue ?? 0)} back`,
+      `SOLD ${pct.toFixed(0)}% of ${position.symbol} (${reason}) — ~${fmtSol(actualReceived)} back`,
     );
     recordTrade({
       type: 'sell',
@@ -162,7 +157,7 @@ export class Trader {
       symbol: position.symbol,
       wallet: position.wallet,
       tokensIn: soldUi,
-      estSolOut: estimatedActualValue,
+      estSolOut: actualReceived,
       pctOfPosition: pct,
       reason,
       signature,
