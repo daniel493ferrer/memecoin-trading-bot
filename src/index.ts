@@ -15,7 +15,7 @@ import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
 import { CandidateRecorder } from './recorder.js';
 import type { TokenCandidate } from './types.js';
-import { fmtSol, short } from './utils.js';
+import { fmtSol, short, sleep } from './utils.js';
 
 const BANNER = `
   ┌─────────────────────────────────────────────┐
@@ -69,8 +69,6 @@ async function main(): Promise<void> {
     // Gate cheap checks first, in order of cost.
     if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
-    if ((Date.now() - lastBuyAt) / 1000 < config.entry.buyCooldownSeconds) return;
-
     seenMints.add(candidate.mint);
     if (seenMints.size > 10_000) {
       const oldest = seenMints.values().next().value;
