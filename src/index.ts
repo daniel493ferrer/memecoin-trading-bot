@@ -45,6 +45,7 @@ async function main(): Promise<void> {
   const pumpStream = new PumpFunStream(config.endpoints.pumpPortalWs, {
     newTokens: config.discovery.pumpfun.enabled && config.discovery.pumpfun.snipeNewTokens,
     migrations: true,
+    apiKey: env.pumpPortalApiKey,
   });
   const raydium = new RaydiumListener(rpc);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
@@ -82,7 +83,22 @@ async function main(): Promise<void> {
       return;
     }
 
+    const preflightSafety = safety.check(candidate);
     const observation = await observer.observe(candidate);
+    const safetyReport = await preflightSafety;
+
+    if (!safetyReport.ok) {
+      await recorder.record(
+        candidate,
+        observation,
+        'reject',
+        `preflight safety rejected: ${safetyReport.reasons.join('; ')}`,
+      );
+      log.info(
+        `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
+      );
+      return;
+    }
 
     // The current outcome recorder is fed by the pump.fun trade stream.
     // Do not create fake zero-trade outcomes for Raydium candidates.
@@ -132,12 +148,24 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Re-check mutable portfolio gates after the observation window. Multiple
-    // candidates can be observed concurrently, but only one may enter safely.
-    if (buying) return;
+    // Multiple candidates may finish observation together. Wait for the current
+    // buy instead of silently discarding a validated opportunity.
+    while (buying) {
+      await sleep(100);
+    }
+
     if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
-    if ((Date.now() - lastBuyAt) / 1000 < config.entry.buyCooldownSeconds) return;
+
+    const cooldownMs =
+      config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
+    if (lastBuyAt > 0 && cooldownMs > 0) {
+      await sleep(cooldownMs);
+    }
+
+    // Re-check mutable portfolio gates after waiting for the entry lock/cooldown.
+    if (store.openCount >= config.entry.maxOpenPositions) return;
+    if (store.hasMint(candidate.mint)) return;
 
     await recorder.record(
       candidate,
@@ -148,6 +176,7 @@ async function main(): Promise<void> {
 
     buying = true;
     try {
+      // Final safety re-check immediately before signing the transaction.
       const report = await safety.check(candidate);
       if (!report.ok) {
         log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${report.reasons.join('; ')}`);
