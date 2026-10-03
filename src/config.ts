@@ -88,6 +88,7 @@ export type BotConfig = z.infer<typeof ConfigSchema>;
 
 export interface Env {
   heliusApiKey: string;
+  pumpPortalApiKey: string;
 }
 
 /** Load and validate config.json + .env. Exits with a clear message on any problem. */
@@ -120,5 +121,12 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     throw new Error('HELIUS_API_KEY is missing. Copy .env.example to .env and add your key.');
   }
 
-  return { config: parsed.data, env: { heliusApiKey } };
+  const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim();
+  if (!pumpPortalApiKey) {
+    throw new Error(
+      'PUMPPORTAL_API_KEY is missing. PumpPortal subscribeTokenTrade requires an API key for live trade observation.',
+    );
+  }
+
+  return { config: parsed.data, env: { heliusApiKey, pumpPortalApiKey } };
 }
