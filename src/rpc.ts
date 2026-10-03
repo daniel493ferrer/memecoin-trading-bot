@@ -87,7 +87,7 @@ export class Rpc {
    * lamport balances.
    */
   async getSolBalanceDelta(signature: string, owner: PublicKey): Promise<number | null> {
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 15; attempt++) {
       const tx = await this.connection
         .getParsedTransaction(signature, {
           maxSupportedTransactionVersion: 0,
