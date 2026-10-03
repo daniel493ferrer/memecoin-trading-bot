@@ -6,7 +6,7 @@
       "snipeMigrations": false
     },
     "raydium": {
-      "enabled": true
+      "enabled": false
     }
   },
   "filters": {
