@@ -20,7 +20,11 @@ export class PumpFunStream extends EventEmitter {
 
   constructor(
     private readonly wsUrl: string,
-    private readonly opts: { newTokens: boolean; migrations: boolean },
+    private readonly opts: {
+      newTokens: boolean;
+      migrations: boolean;
+      apiKey: string;
+    },
   ) {
     super();
   }
@@ -61,6 +65,7 @@ export class PumpFunStream extends EventEmitter {
     if (this.stopped) return;
 
     const url = new URL(this.wsUrl);
+    url.searchParams.set('api-key', this.opts.apiKey);
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -135,6 +140,11 @@ export class PumpFunStream extends EventEmitter {
     if (msg.txType === 'migrate' && msg.mint) {
       log.info(`migration detected: ${short(msg.mint)}`);
       this.emit('migration', msg.mint as string);
+      return;
+    }
+
+    if (msg.message && !msg.txType) {
+      log.warn('pump.fun stream message: ' + String(msg.message));
       return;
     }
 
