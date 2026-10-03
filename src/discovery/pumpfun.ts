@@ -14,7 +14,7 @@ import type { PumpTradeEvent, TokenCandidate } from '../types.js';
  */
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
-  private watchedMints = new Set<string>();
+  private watchedMints = new Map<string, number>();
   private stopped = false;
   private reconnectDelayMs = 1_000;
 
@@ -38,13 +38,23 @@ export class PumpFunStream extends EventEmitter {
 
   /** Subscribe to live trades for a mint (used to price open positions). */
   watchToken(mint: string): void {
-    this.watchedMints.add(mint);
-    this.send({ method: 'subscribeTokenTrade', keys: [mint] });
+    const refs = this.watchedMints.get(mint) ?? 0;
+    this.watchedMints.set(mint, refs + 1);
+    if (refs === 0) {
+      this.send({ method: 'subscribeTokenTrade', keys: [mint] });
+    }
   }
 
   unwatchToken(mint: string): void {
-    this.watchedMints.delete(mint);
-    this.send({ method: 'unsubscribeTokenTrade', keys: [mint] });
+    const refs = this.watchedMints.get(mint) ?? 0;
+    if (refs <= 1) {
+      this.watchedMints.delete(mint);
+      if (refs === 1) {
+        this.send({ method: 'unsubscribeTokenTrade', keys: [mint] });
+      }
+      return;
+    }
+    this.watchedMints.set(mint, refs - 1);
   }
 
   private connect(): void {
@@ -69,7 +79,7 @@ export class PumpFunStream extends EventEmitter {
       if (this.watchedMints.size > 0) {
         this.send({
           method: 'subscribeTokenTrade',
-          keys: [...this.watchedMints],
+          keys: [...this.watchedMints.keys()],
         });
       }
     });
