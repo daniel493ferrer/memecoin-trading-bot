@@ -92,6 +92,29 @@ export class Rpc {
     return null;
   }
 
+  /** Net SOL balance delta for the owner in a confirmed transaction. */
+  async getSolBalanceDelta(signature: string, owner: PublicKey): Promise<number | null> {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const tx = await this.connection.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      }).catch(() => null);
+
+      if (tx?.meta) {
+        const index = tx.transaction.message.accountKeys.findIndex(
+          (account) => account.pubkey.equals(owner),
+        );
+        if (index >= 0) {
+          return (tx.meta.postBalances[index] - tx.meta.preBalances[index]) / 1e9;
+        }
+      }
+
+      await sleep(500);
+    }
+
+    return null;
+  }
+
   /** Sum of all token accounts the owner holds for a mint, in raw units. */
   async getTokenBalanceRaw(owner: PublicKey, mint: string): Promise<bigint> {
     let accounts;
