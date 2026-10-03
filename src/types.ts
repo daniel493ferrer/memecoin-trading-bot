@@ -45,9 +45,9 @@ export interface Position {
   tokensRawInitial: string;
   /** Raw token amount still held. */
   tokensRawRemaining: string;
-  /** SOL spent to open the position (excludes priority fee). */
+  /** Actual SOL cash outflow to open the position, including transaction fees when recovered. */
   solSpent: number;
-  /** Estimated SOL received back from sells so far. */
+  /** Actual net SOL cash received from confirmed sells so far. */
   solReceived: number;
   /** Entry price in SOL per token (UI units). */
   entryPrice: number;
