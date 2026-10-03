@@ -69,7 +69,10 @@ export class CandidateOutcomeTracker {
         peakPrice,
         troughPrice,
         maxGainPct: ((peakPrice / entryPrice) - 1) * 100,
-        maxDrawdownPct: ((troughPrice / entryPrice) - 1) * 100,
+        maxDrawdownPct:
+          peakPrice > 0
+            ? ((troughPrice / peakPrice) - 1) * 100
+            : 0,
         finalChangePct: ((lastPrice / entryPrice) - 1) * 100,
         trades: events.length,
         buyTrades: events.filter((e) => e.txType === 'buy').length,
