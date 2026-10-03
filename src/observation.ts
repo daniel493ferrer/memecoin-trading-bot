@@ -82,7 +82,7 @@ export class CandidateObserver {
         const elapsed = Date.now() - startedAt;
 
         if (elapsed >= minDurationMs) {
-          const report = this.evaluate(session.events);
+          const report = this.evaluate(session.events, elapsed / 1_000);
 
           if (this.isEarlyEntrySignal(report)) {
             return report;
@@ -92,7 +92,7 @@ export class CandidateObserver {
         await sleep(intervalMs);
       }
 
-      return this.evaluate(session.events);
+      return this.evaluate(session.events, (Date.now() - startedAt) / 1_000);
     } finally {
       this.sessions.delete(candidate.mint);
       this.stream.unwatchToken(candidate.mint);
@@ -114,7 +114,10 @@ export class CandidateObserver {
     );
   }
 
-  private evaluate(events: PumpTradeEvent[]): ObservationReport {
+  private evaluate(
+    events: PumpTradeEvent[],
+    elapsedSeconds = this.config.durationSeconds,
+  ): ObservationReport {
     const buys = events.filter(
       (event) => event.txType === 'buy' && event.solAmount > 0,
     );
@@ -234,7 +237,7 @@ export class CandidateObserver {
 
     const tradeRate =
       events.length /
-      Math.max(1, this.config.durationSeconds);
+      Math.max(1, elapsedSeconds);
 
     const reasons: string[] = [];
 
