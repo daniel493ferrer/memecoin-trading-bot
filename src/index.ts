@@ -84,7 +84,9 @@ async function main(): Promise<void> {
 
     const observation = await observer.observe(candidate);
 
-    if (observation.lastPrice > 0) {
+    // The current outcome recorder is fed by the pump.fun trade stream.
+    // Do not create fake zero-trade outcomes for Raydium candidates.
+    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
       void outcomeTracker.track(
         candidate.mint,
         observation.lastPrice,
