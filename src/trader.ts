@@ -22,8 +22,7 @@ export class Trader {
 
   /**
    * Open a position in `candidate`. Confirms the buy on-chain, measures the
-   * actual fill from the wallet's token balance delta, and persists it.
-   * Returns the position, or null if the buy could not be completed.
+   * actual token fill and actual wallet SOL cash outflow, then persists it.
    */
   async buy(candidate: TokenCandidate, decimals: number): Promise<Position | null> {
     const entry = this.config.entry;
@@ -43,7 +42,6 @@ export class Trader {
       return null;
     }
 
-    // Measure the real fill: poll for the token balance delta post-confirmation.
     let tokensRaw = 0n;
     for (let i = 0; i < 10; i++) {
       const after = await this.rpc.getTokenBalanceRaw(wallet.pubkey, candidate.mint);
@@ -56,7 +54,21 @@ export class Trader {
       return null;
     }
 
+    // Use the confirmed transaction's wallet cash-flow delta so network and
+    // priority fees are included in the realized cost.
+    const solDelta = await this.rpc.getSolBalanceDelta(signature, wallet.pubkey);
+    let solSpent: number;
+    if (solDelta !== null && solDelta < 0) {
+      solSpent = -solDelta;
+    } else {
+      solSpent = entry.buyAmountSol;
+      log.warn(
+        `could not recover exact SOL cash outflow for buy ${short(signature)} — using configured amount ${fmtSol(solSpent)}`,
+      );
+    }
+
     const tokensUi = rawToUi(tokensRaw, decimals);
+    const entryPrice = solSpent / tokensUi;
     const position: Position = {
       id: randomUUID(),
       mint: candidate.mint,
@@ -68,10 +80,10 @@ export class Trader {
       tokenDecimals: decimals,
       tokensRawInitial: tokensRaw.toString(),
       tokensRawRemaining: tokensRaw.toString(),
-      solSpent: entry.buyAmountSol,
+      solSpent,
       solReceived: 0,
-      entryPrice: entry.buyAmountSol / tokensUi,
-      peakPrice: entry.buyAmountSol / tokensUi,
+      entryPrice,
+      peakPrice: entryPrice,
       takeProfitsFilled: [],
       trailingActive: false,
       openedAt: Date.now(),
@@ -79,9 +91,10 @@ export class Trader {
       buySignature: signature,
     };
     this.store.add(position);
+    this.balanceCache.delete(wallet.pubkey.toBase58());
 
     log.trade(
-      `BOUGHT ${candidate.symbol} (${short(candidate.mint)}) — ${fmtSol(entry.buyAmountSol)} for ${tokensUi.toLocaleString()} tokens via ${wallet.name}`,
+      `BOUGHT ${candidate.symbol} (${short(candidate.mint)}) — ${fmtSol(solSpent)} for ${tokensUi.toLocaleString()} tokens via ${wallet.name}`,
     );
     recordTrade({
       type: 'buy',
@@ -89,7 +102,7 @@ export class Trader {
       symbol: candidate.symbol,
       source: candidate.source,
       wallet: wallet.pubkey.toBase58(),
-      solIn: entry.buyAmountSol,
+      solIn: solSpent,
       tokensOut: tokensUi,
       price: position.entryPrice,
       signature,
@@ -97,10 +110,7 @@ export class Trader {
     return position;
   }
 
-  /**
-   * Sell `pct` percent of the remaining position (100 = full close).
-   * Returns true when the sell landed.
-   */
+  /** Sell `pct` percent of the remaining position (100 = full close). */
   async sell(position: Position, pct: number, reason: ExitReason | 'take-profit'): Promise<boolean> {
     const wallet = this.wallets.byPubkey(position.wallet);
     if (!wallet) {
@@ -113,43 +123,53 @@ export class Trader {
     const sellRaw = pct >= 100 ? remaining : (remaining * BigInt(Math.floor(pct * 100))) / 10_000n;
     if (sellRaw <= 0n) return false;
 
-    // Capture the wallet balance before execution. A wallet may have tokens of
-    // this mint that are not owned by this tracked position.
     const balanceBefore = await this.rpc.getTokenBalanceRaw(wallet.pubkey, position.mint);
 
     let signature: string;
     try {
-      // sendAndConfirm already re-broadcasts the same signed transaction. Do
-      // not rebuild a sell after an ambiguous confirmation timeout: the first
-      // transaction may have landed and a retry could sell twice.
+      // sendAndConfirm re-broadcasts the same signed transaction. Do not
+      // rebuild a sell after an ambiguous confirmation timeout.
       signature = await this.executeSell(wallet, position, sellRaw);
     } catch (err) {
       log.error(`sell failed for ${position.symbol} (${reason}): ${(err as Error).message}`);
       return false;
     }
 
-    // Poll because a confirmed RPC response can still briefly serve a stale
-    // token-account balance from another backend node.
     let balanceAfter = balanceBefore;
     for (let i = 0; i < 10; i++) {
       balanceAfter = await this.rpc.getTokenBalanceRaw(wallet.pubkey, position.mint);
       if (balanceAfter < balanceBefore) break;
       await sleep(500);
     }
+
     const actualSold = balanceBefore > balanceAfter ? balanceBefore - balanceAfter : 0n;
     if (actualSold <= 0n) {
       log.error(`sell confirmed but token balance did not decrease for ${position.symbol} — check tx ${signature}`);
       return false;
     }
+
     const trackedRemaining = actualSold >= remaining ? 0n : remaining - actualSold;
     position.tokensRawRemaining = trackedRemaining.toString();
+
     const solDelta = await this.rpc.getSolBalanceDelta(signature, wallet.pubkey);
-    const actualReceived = solDelta !== null && solDelta > 0 ? solDelta : 0;
+    if (solDelta === null || solDelta <= 0) {
+      log.error(
+        `sell landed but exact SOL proceeds were not recoverable for ${position.symbol} — check tx ${signature}`,
+      );
+      // The tokens are already gone. Do not pretend the proceeds were zero and
+      // book a false loss; keep the position open only if something remains.
+      if (trackedRemaining > 0n) {
+        this.store.update(position);
+      }
+      return false;
+    }
+
+    const actualReceived = solDelta;
     position.solReceived += actualReceived;
 
     const soldUi = rawToUi(actualSold, position.tokenDecimals);
     log.trade(
-      `SOLD ${pct.toFixed(0)}% of ${position.symbol} (${reason}) — ~${fmtSol(actualReceived)} back`,
+      `SOLD ${pct.toFixed(0)}% of ${position.symbol} (${reason}) — ~${fmtSol(actualReceived)} net back`,
     );
     recordTrade({
       type: 'sell',
@@ -157,7 +177,7 @@ export class Trader {
       symbol: position.symbol,
       wallet: position.wallet,
       tokensIn: soldUi,
-      estSolOut: actualReceived,
+      solOut: actualReceived,
       pctOfPosition: pct,
       reason,
       signature,
@@ -168,6 +188,7 @@ export class Trader {
     } else {
       this.store.update(position);
     }
+    this.balanceCache.delete(wallet.pubkey.toBase58());
     return true;
   }
 
@@ -198,8 +219,6 @@ export class Trader {
       return this.pump.buy(wallet, candidate.mint, entry.buyAmountSol, entry);
     }
 
-    // AMM route: Jupiter may take a short while to index a brand-new pool,
-    // so retry the quote until routeTimeoutSeconds runs out.
     const deadline = Date.now() + entry.routeTimeoutSeconds * 1_000;
     let lastErr: Error | null = null;
     while (Date.now() < deadline) {
@@ -220,8 +239,6 @@ export class Trader {
   ): Promise<string> {
     const entry = this.config.entry;
     if (position.venue === 'pump') {
-      // Always sell the tracked raw amount. PumpPortal's "100%" would sweep
-      // unrelated pre-existing holdings of this mint from the wallet.
       const amount = rawToUi(sellRaw, position.tokenDecimals);
       return this.pump.sell(wallet, position.mint, amount, entry);
     }
