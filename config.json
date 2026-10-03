@@ -10,7 +10,11 @@
     }
   },
   "filters": {
-    "symbolBlacklist": ["test", "scam", "rug"],
+    "symbolBlacklist": [
+      "test",
+      "scam",
+      "rug"
+    ],
     "symbolWhitelist": [],
     "minDevBuySol": 0.05,
     "maxDevBuySol": 3,
@@ -21,7 +25,7 @@
   },
   "observation": {
     "enabled": true,
-    "durationSeconds": 20,
+    "durationSeconds": 10,
     "maxConcurrentCandidates": 25,
     "minTrades": 5,
     "minUniqueBuyers": 3,
@@ -29,10 +33,12 @@
     "minBuySellRatio": 1.5,
     "maxSingleBuyerPct": 60,
     "minPriceChangePct": 0,
-    "minScore": 70
+    "minScore": 70,
+    "minObservationSeconds": 3,
+    "evaluationIntervalMs": 500
   },
   "strategy": {
-    "name": "default"
+    "name": "momentum"
   },
   "entry": {
     "buyAmountSol": 0.03,
@@ -44,8 +50,14 @@
   },
   "exit": {
     "takeProfits": [
-      { "multiple": 1.8, "sellPct": 40 },
-      { "multiple": 3.0, "sellPct": 40 }
+      {
+        "multiple": 1.8,
+        "sellPct": 40
+      },
+      {
+        "multiple": 3.0,
+        "sellPct": 40
+      }
     ],
     "stopLossPct": 30,
     "trailingStop": {

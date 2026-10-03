@@ -11,7 +11,9 @@ import { PositionStore } from './positions.js';
 import { Trader } from './trader.js';
 import { ExitMonitor } from './monitor.js';
 import { CandidateObserver } from './observation.js';
+import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
+import { CandidateRecorder } from './recorder.js';
 import type { TokenCandidate } from './types.js';
 import { fmtSol, short } from './utils.js';
 
@@ -48,6 +50,11 @@ async function main(): Promise<void> {
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
   const observer = new CandidateObserver(pumpStream, config.observation);
   const strategy = createStrategy(config.strategy.name);
+  const recorder = new CandidateRecorder('data/candidates.jsonl');
+  const outcomeTracker = new CandidateOutcomeTracker(
+    pumpStream,
+    'data/outcomes.jsonl',
+  );
 
   // ------------------------------------------------------------- buy pipeline
 
@@ -76,7 +83,28 @@ async function main(): Promise<void> {
     }
 
     const observation = await observer.observe(candidate);
+
+    if (observation.lastPrice > 0) {
+      void outcomeTracker.track(
+        candidate.mint,
+        observation.lastPrice,
+        300,
+      ).catch((error: unknown) => {
+        log.warn(
+          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
     if (!observation.ok) {
+      await recorder.record(
+        candidate,
+        observation,
+        'reject',
+        `observation rejected: ${observation.reasons.join('; ')}`,
+      );
+
       log.info(
         `skip ${candidate.symbol} (${short(candidate.mint)}): observation rejected — ${observation.reasons.join('; ')}`,
       );
@@ -91,6 +119,13 @@ async function main(): Promise<void> {
 
     const decision = await strategy.evaluate({ candidate, observation });
     if (!decision.buy) {
+      await recorder.record(
+        candidate,
+        observation,
+        'reject',
+        `strategy ${strategy.name}: ${decision.reason}`,
+      );
+
       log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): strategy ${strategy.name} — ${decision.reason}`);
       return;
     }
@@ -101,6 +136,13 @@ async function main(): Promise<void> {
     if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
     if ((Date.now() - lastBuyAt) / 1000 < config.entry.buyCooldownSeconds) return;
+
+    await recorder.record(
+      candidate,
+      observation,
+      'buy',
+      `strategy ${strategy.name}: ${decision.reason}`,
+    );
 
     buying = true;
     try {

@@ -37,6 +37,8 @@ const ConfigSchema = z.object({
   observation: z.object({
     enabled: z.boolean(),
     durationSeconds: z.number().int().min(5).max(300),
+    minObservationSeconds: z.number().min(1),
+    evaluationIntervalMs: z.number().int().min(250),
     maxConcurrentCandidates: z.number().int().min(1).max(500),
     minTrades: z.number().int().min(1),
     minUniqueBuyers: z.number().int().min(1),
