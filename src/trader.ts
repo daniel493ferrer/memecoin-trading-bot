@@ -25,6 +25,10 @@ export class Trader {
    * actual token fill and actual wallet SOL cash outflow, then persists it.
    */
   async buy(candidate: TokenCandidate, decimals: number): Promise<Position | null> {
+    if (!this.config.liveTrading) {
+      log.warn(`LIVE_TRADING=false — simulated buy skipped for ${candidate.symbol}`);
+      return null;
+    }
     const entry = this.config.entry;
     const allocation = await this.pickFundedWallet();
     if (!allocation) {
@@ -113,6 +117,10 @@ export class Trader {
 
   /** Sell `pct` percent of the remaining position (100 = full close). */
   async sell(position: Position, pct: number, reason: ExitReason | 'take-profit'): Promise<boolean> {
+    if (!this.config.liveTrading) {
+      log.warn(`LIVE_TRADING=false — simulated sell skipped for ${position.symbol} (${reason})`);
+      return false;
+    }
     const wallet = this.wallets.byPubkey(position.wallet);
     if (!wallet) {
       log.error(`wallet ${short(position.wallet)} for ${position.symbol} not in wallets.json — cannot sell`);
