@@ -52,7 +52,8 @@ const ConfigSchema = z.object({
     name: z.string().min(1),
   }),
   entry: z.object({
-    buyAmountSol: z.number().gt(0),
+    reservePct: z.number().min(0).max(90),
+    positionPctOfOperatingCapital: z.number().gt(0).max(100),
     slippageBps: z.number().int().min(50).max(10_000),
     priorityFeeSol: z.number().min(0),
     maxOpenPositions: z.number().int().min(1),
