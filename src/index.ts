@@ -182,7 +182,7 @@ async function main(): Promise<void> {
       }
 
       log.info(
-        `sniping ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — ${fmtSol(config.entry.buyAmountSol)}`,
+        `entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — capital allocation is percentage-based`,
       );
       const position = await trader.buy(candidate, report.decimals);
       if (position) {
@@ -231,7 +231,8 @@ async function main(): Promise<void> {
   monitor.start();
 
   log.ok(
-    `bot running — ${wallets.count} wallet(s), buy size ${fmtSol(config.entry.buyAmountSol)}, ` +
+    `bot running — ${wallets.count} wallet(s), reserve ${config.entry.reservePct}%, ` +
+      `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
       `max ${config.entry.maxOpenPositions} open position(s)`,
   );
 
