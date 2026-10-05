@@ -57,7 +57,7 @@
       "activateAtMultiple": 1.5,
       "trailPct": 20
     },
-    "maxHoldSeconds": 1200,
+    "maxHoldSeconds": 0,
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 3500
