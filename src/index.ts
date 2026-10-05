@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   const store = new PositionStore();
   store.load();
 
-  const trader = new Trader(rpc, wallets, pumpEngine, jupiterEngine, store, config);
+  const trader = new Trader(rpc, wallets, pumpEngine, jupiterEngine, store, config, env.liveTrading);
 
   // Migration events stay subscribed regardless of sniping settings: any open
   // pump.fun position needs them to switch its pricing/execution to the AMM.
@@ -233,7 +233,8 @@ async function main(): Promise<void> {
   log.ok(
     `bot running — ${wallets.count} wallet(s), reserve ${config.entry.reservePct}%, ` +
       `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
-      `max ${config.entry.maxOpenPositions} open position(s)`,
+      `max ${config.entry.maxOpenPositions} open position(s), ` +
+      `mode ${env.liveTrading ? 'LIVE' : 'DRY-RUN'}`,
   );
 
   // Periodic status line so long sessions stay legible.
