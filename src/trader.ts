@@ -18,6 +18,7 @@ export class Trader {
     private readonly jupiter: JupiterEngine,
     private readonly store: PositionStore,
     private readonly config: BotConfig,
+    private readonly liveTrading: boolean,
   ) {}
 
   /**
@@ -25,7 +26,7 @@ export class Trader {
    * actual token fill and actual wallet SOL cash outflow, then persists it.
    */
   async buy(candidate: TokenCandidate, decimals: number): Promise<Position | null> {
-    if (!this.config.liveTrading) {
+    if (!this.liveTrading) {
       log.warn(`LIVE_TRADING=false — simulated buy skipped for ${candidate.symbol}`);
       return null;
     }
@@ -117,7 +118,7 @@ export class Trader {
 
   /** Sell `pct` percent of the remaining position (100 = full close). */
   async sell(position: Position, pct: number, reason: ExitReason | 'take-profit'): Promise<boolean> {
-    if (!this.config.liveTrading) {
+    if (!this.liveTrading) {
       log.warn(`LIVE_TRADING=false — simulated sell skipped for ${position.symbol} (${reason})`);
       return false;
     }
