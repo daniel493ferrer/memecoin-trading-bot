@@ -90,6 +90,7 @@ export type BotConfig = z.infer<typeof ConfigSchema>;
 export interface Env {
   heliusApiKey: string;
   pumpPortalApiKey: string;
+  liveTrading: boolean;
 }
 
 /** Load and validate config.json + .env. Exits with a clear message on any problem. */
@@ -122,6 +123,12 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     throw new Error('HELIUS_API_KEY is missing. Copy .env.example to .env and add your key.');
   }
 
+  const liveTradingRaw = process.env.LIVE_TRADING?.trim().toLowerCase() ?? 'false';
+  if (liveTradingRaw !== 'true' && liveTradingRaw !== 'false') {
+    throw new Error('LIVE_TRADING must be true or false.');
+  }
+  const liveTrading = liveTradingRaw === 'true';
+
   const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim();
   if (!pumpPortalApiKey) {
     throw new Error(
@@ -129,5 +136,5 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     );
   }
 
-  return { config: parsed.data, env: { heliusApiKey, pumpPortalApiKey } };
+  return { config: parsed.data, env: { heliusApiKey, pumpPortalApiKey, liveTrading } };
 }
