@@ -50,16 +50,7 @@
     "routeTimeoutSeconds": 45
   },
   "exit": {
-    "takeProfits": [
-      {
-        "multiple": 1.8,
-        "sellPct": 40
-      },
-      {
-        "multiple": 3.0,
-        "sellPct": 40
-      }
-    ],
+    "takeProfits": [],
     "stopLossPct": 30,
     "trailingStop": {
       "enabled": true,
