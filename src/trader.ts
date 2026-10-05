@@ -26,17 +26,18 @@ export class Trader {
    */
   async buy(candidate: TokenCandidate, decimals: number): Promise<Position | null> {
     const entry = this.config.entry;
-    const wallet = await this.pickFundedWallet(entry.buyAmountSol);
-    if (!wallet) {
-      log.warn(`skipping ${candidate.symbol}: no wallet has ${fmtSol(entry.buyAmountSol)} free`);
+    const allocation = await this.pickFundedWallet();
+    if (!allocation) {
+      log.warn(`skipping ${candidate.symbol}: no wallet can fund the configured percentage allocation`);
       return null;
     }
+    const { wallet, amountSol } = allocation;
 
     const balanceBefore = await this.rpc.getTokenBalanceRaw(wallet.pubkey, candidate.mint);
 
     let signature: string;
     try {
-      signature = await this.executeBuy(wallet, candidate);
+      signature = await this.executeBuy(wallet, candidate, amountSol);
     } catch (err) {
       log.error(`buy failed for ${candidate.symbol} (${short(candidate.mint)}): ${(err as Error).message}`);
       return null;
@@ -61,9 +62,9 @@ export class Trader {
     if (solDelta !== null && solDelta < 0) {
       solSpent = -solDelta;
     } else {
-      solSpent = entry.buyAmountSol;
+      solSpent = amountSol;
       log.warn(
-        `could not recover exact SOL cash outflow for buy ${short(signature)} — using configured amount ${fmtSol(solSpent)}`,
+        `could not recover exact SOL cash outflow for buy ${short(signature)} — using calculated allocation ${fmtSol(solSpent)}`,
       );
     }
 
@@ -213,17 +214,21 @@ export class Trader {
     });
   }
 
-  private async executeBuy(wallet: ManagedWallet, candidate: TokenCandidate): Promise<string> {
+  private async executeBuy(
+    wallet: ManagedWallet,
+    candidate: TokenCandidate,
+    amountSol: number,
+  ): Promise<string> {
     const entry = this.config.entry;
     if (candidate.venue === 'pump') {
-      return this.pump.buy(wallet, candidate.mint, entry.buyAmountSol, entry);
+      return this.pump.buy(wallet, candidate.mint, amountSol, entry);
     }
 
     const deadline = Date.now() + entry.routeTimeoutSeconds * 1_000;
     let lastErr: Error | null = null;
     while (Date.now() < deadline) {
       try {
-        return await this.jupiter.buy(wallet, candidate.mint, entry.buyAmountSol, entry);
+        return await this.jupiter.buy(wallet, candidate.mint, amountSol, entry);
       } catch (err) {
         lastErr = err as Error;
         await sleep(3_000);
@@ -245,12 +250,29 @@ export class Trader {
     return this.jupiter.sell(wallet, position.mint, sellRaw, entry);
   }
 
-  /** Round-robin/random rotation, skipping wallets that can't fund the buy. */
-  private async pickFundedWallet(amountSol: number): Promise<ManagedWallet | null> {
-    const needed = amountSol + this.config.entry.priorityFeeSol + this.config.wallets.minSolReserve;
+  /**
+   * Calculate the next position from the wallet's current SOL balance.
+   * The reserve is protected as a percentage; the position uses a percentage
+   * of the remaining operating capital. This makes position size grow/shrink
+   * automatically with the wallet balance.
+   */
+  private async pickFundedWallet(): Promise<{ wallet: ManagedWallet; amountSol: number } | null> {
+    const { reservePct, positionPctOfOperatingCapital } = this.config.entry;
+
     for (let i = 0; i < this.wallets.count; i++) {
-      const w = this.wallets.next();
-      if (await this.checkBalance(w, needed)) return w;
+      const wallet = this.wallets.next();
+      try {
+        const balanceSol = await this.rpc.getSolBalance(wallet.pubkey);
+        const operatingCapital = balanceSol * (1 - reservePct / 100);
+        const amountSol = operatingCapital * (positionPctOfOperatingCapital / 100);
+        const needed = amountSol + this.config.entry.priorityFeeSol + this.config.wallets.minSolReserve;
+
+        if (amountSol > 0 && balanceSol >= needed) {
+          return { wallet, amountSol };
+        }
+      } catch (err) {
+        log.warn(`could not read SOL balance for ${wallet.name}: ${(err as Error).message}`);
+      }
     }
     return null;
   }
