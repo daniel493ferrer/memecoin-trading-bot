@@ -11,9 +11,9 @@ import { fmtPct, rawToUi, short } from './utils.js';
 const MAX_PRICE_FAILURES = 5;
 
 /**
- * Watches every open position and fires the configured exit rules:
- * take-profit ladder, stop loss, trailing stop, max-hold timeout,
- * dev-sell exit, and migration handling.
+ * Watches every open position and keeps the position open through the move.
+ * Exits are emergency protection plus peak-drawdown deterioration, with no
+ * fixed profit-taking ladder.
  *
  * Pricing:
  *  - pump venue: pushed in real time from bonding-curve trade events
@@ -178,26 +178,8 @@ export class ExitMonitor {
       }
     }
 
-    // 3. Take-profit ladder (rungs sorted ascending at config load).
-    for (let i = 0; i < exit.takeProfits.length; i++) {
-      const tp = exit.takeProfits[i];
-      if (position.takeProfitsFilled.includes(i) || multiple < tp.multiple) continue;
-
-      log.info(`${position.symbol}: take-profit ${tp.multiple}x hit at ${multiple.toFixed(2)}x`);
-      this.selling.add(position.id);
-      try {
-        const sold = await this.trader.sell(position, tp.sellPct, 'take-profit');
-        if (sold) {
-          position.takeProfitsFilled.push(i);
-          // If the final rung sells 100%, sell() already finalized the position.
-          if (position.status === 'open') this.store.update(position);
-        }
-      } finally {
-        this.selling.delete(position.id);
-      }
-      if (position.status !== 'open') return;
-      break; // one rung per tick; the next tick handles further rungs
-    }
+    // No fixed take-profit: the whole position stays intact while the move
+    // remains healthy. The trailing stop is the primary deterioration exit.
   }
 
   /** Full exit — sells 100% and closes the position. */
