@@ -41,10 +41,11 @@
     "name": "momentum"
   },
   "entry": {
-    "buyAmountSol": 0.03,
+    "reservePct": 20,
+    "positionPctOfOperatingCapital": 100,
     "slippageBps": 2000,
     "priorityFeeSol": 0.0007,
-    "maxOpenPositions": 4,
+    "maxOpenPositions": 1,
     "buyCooldownSeconds": 15,
     "routeTimeoutSeconds": 45
   },
