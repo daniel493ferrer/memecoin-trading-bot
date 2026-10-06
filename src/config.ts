@@ -38,6 +38,7 @@ const ConfigSchema = z.object({
     enabled: z.boolean(),
     durationSeconds: z.number().int().min(5).max(300),
     minObservationSeconds: z.number().min(1),
+    checkpointsSeconds: z.array(z.number().int().min(1)).min(1),
     evaluationIntervalMs: z.number().int().min(250),
     maxConcurrentCandidates: z.number().int().min(1).max(500),
     minTrades: z.number().int().min(1),
@@ -114,6 +115,15 @@ export function loadConfig(): { config: BotConfig; env: Env } {
       .join('\n');
     throw new Error(`config.json failed validation:\n${issues}`);
   }
+
+  if (parsed.data.observation.checkpointsSeconds.some(
+    (seconds) => seconds > parsed.data.observation.durationSeconds,
+  )) {
+    throw new Error('observation.checkpointsSeconds cannot exceed durationSeconds.');
+  }
+  parsed.data.observation.checkpointsSeconds = [
+    ...new Set(parsed.data.observation.checkpointsSeconds),
+  ].sort((a, b) => a - b);
 
   // Take-profit rungs must be sorted ascending so the monitor can fire them in order.
   parsed.data.exit.takeProfits.sort((a, b) => a.multiple - b.multiple);
