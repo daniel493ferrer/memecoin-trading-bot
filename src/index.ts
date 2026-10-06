@@ -75,8 +75,14 @@ async function main(): Promise<void> {
       if (oldest) seenMints.delete(oldest);
     }
 
+    // Start trade capture immediately on discovery so the first seconds are
+    // not lost while the candidate passes cheap filters.
+    const earlyTradeWatch = candidate.venue === 'pump';
+    if (earlyTradeWatch) pumpStream.watchToken(candidate.mint);
+
     const rejected = safety.prefilter(candidate);
     if (rejected) {
+      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
       await recorder.recordPrefilterReject(candidate, `prefilter rejected: ${rejected}`);
       log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
       return;
@@ -88,6 +94,7 @@ async function main(): Promise<void> {
     const observation = await observer.observe(candidate);
 
     if (!observation.ok) {
+      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
       await recorder.record(
         candidate,
         observation,
@@ -117,6 +124,9 @@ async function main(): Promise<void> {
           }`,
         );
       });
+      // Transfer the discovery-time watch to the outcome tracker. The
+      // observer has already released its own reference.
+      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
     }
 
     const safetyReport = await safety.check(candidate);
