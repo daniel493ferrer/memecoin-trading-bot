@@ -15,6 +15,7 @@ import type { PumpTradeEvent, TokenCandidate } from '../types.js';
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private watchedMints = new Map<string, number>();
+  private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
 
@@ -36,6 +37,10 @@ export class PumpFunStream extends EventEmitter {
 
   stop(): void {
     this.stopped = true;
+    if (this.syncTimer) {
+      clearTimeout(this.syncTimer);
+      this.syncTimer = null;
+    }
     this.ws?.close();
     this.ws = null;
   }
@@ -44,21 +49,38 @@ export class PumpFunStream extends EventEmitter {
   watchToken(mint: string): void {
     const refs = this.watchedMints.get(mint) ?? 0;
     this.watchedMints.set(mint, refs + 1);
-    if (refs === 0) {
-      this.send({ method: 'subscribeTokenTrade', keys: [mint] });
-    }
+    if (refs === 0) this.scheduleTradeSync();
   }
 
   unwatchToken(mint: string): void {
     const refs = this.watchedMints.get(mint) ?? 0;
     if (refs <= 1) {
       this.watchedMints.delete(mint);
-      if (refs === 1) {
-        this.send({ method: 'unsubscribeTokenTrade', keys: [mint] });
-      }
-      return;
+    } else {
+      this.watchedMints.set(mint, refs - 1);
     }
-    this.watchedMints.set(mint, refs - 1);
+    if (refs > 0) this.scheduleTradeSync();
+  }
+
+  private scheduleTradeSync(): void {
+    if (this.syncTimer || this.stopped) return;
+
+    // Coalesce candidate churn into one PumpPortal request. Without this,
+    // dozens of concurrent observations generate a subscribe/unsubscribe
+    // message for every individual mint.
+    this.syncTimer = setTimeout(() => {
+      this.syncTimer = null;
+      this.syncTradeSubscriptions();
+    }, 100);
+  }
+
+  private syncTradeSubscriptions(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+
+    const keys = [...this.watchedMints.keys()];
+    if (keys.length === 0) return;
+
+    this.send({ method: 'subscribeTokenTrade', keys });
   }
 
   private connect(): void {
@@ -81,12 +103,7 @@ export class PumpFunStream extends EventEmitter {
         this.send({ method: 'subscribeMigration' });
       }
 
-      if (this.watchedMints.size > 0) {
-        this.send({
-          method: 'subscribeTokenTrade',
-          keys: [...this.watchedMints.keys()],
-        });
-      }
+      this.syncTradeSubscriptions();
     });
 
     ws.on('message', (data) => {
