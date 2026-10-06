@@ -48,10 +48,7 @@ export class FomoObserver {
         await sleep(250);
       }
 
-      const report = this.evaluate(
-        session.events,
-        (Date.now() - startedAt) / 1_000,
-      );
+      const report = this.evaluate(session.events, (Date.now() - startedAt) / 1_000);
       return this.withHistory(
         report,
         session,
@@ -65,7 +62,7 @@ export class FomoObserver {
   private isQualified(report: ObservationReport): boolean {
     return (
       report.uniqueBuyers >= this.config.minUniqueTraders &&
-      report.buyVolumeUsd >= this.config.minBuyUsd &&
+      report.buyVolumeSol >= this.config.minBuyUsd &&
       report.buySellRatio >= this.config.minBuySellRatio &&
       report.largestBuyerPct <= this.config.maxSingleTraderPct &&
       report.score >= this.config.minScore
@@ -75,7 +72,7 @@ export class FomoObserver {
   private shouldAbort(report: ObservationReport, elapsed: number): boolean {
     return (
       elapsed >= this.config.minObservationSeconds &&
-      report.sellVolumeUsd > report.buyVolumeUsd &&
+      report.sellVolumeSol > report.buyVolumeSol &&
       report.uniqueBuyers < this.config.minUniqueTraders
     );
   }
@@ -102,10 +99,11 @@ export class FomoObserver {
     const breadth = Math.min(30, buyerVolumes.size * 6);
     const flow = Math.min(25, buyPressure / 4);
     const ratio = Number.isFinite(buySellRatio) ? Math.min(20, buySellRatio * 5) : 20;
-    const size = Math.min(15, buyVolumeUsd / Math.max(1, this.config.minBuyUsd) * 5);
-    const concentration = largestBuyerPct <= this.config.maxSingleTraderPct
-      ? 10
-      : Math.max(0, 10 - (largestBuyerPct - this.config.maxSingleTraderPct));
+    const size = Math.min(15, (buyVolumeUsd / Math.max(1, this.config.minBuyUsd)) * 5);
+    const concentration =
+      largestBuyerPct <= this.config.maxSingleTraderPct
+        ? 10
+        : Math.max(0, 10 - (largestBuyerPct - this.config.maxSingleTraderPct));
     const score = Math.round(Math.min(100, breadth + flow + ratio + size + concentration));
 
     const reasons: string[] = [];
@@ -121,8 +119,8 @@ export class FomoObserver {
       score,
       trades: events.length,
       uniqueBuyers: buyerVolumes.size,
-      buyVolumeSol: 0,
-      sellVolumeSol: 0,
+      buyVolumeSol: buyVolumeUsd,
+      sellVolumeSol: sellVolumeUsd,
       buySellRatio,
       largestBuyerPct,
       firstPrice: 0,
@@ -140,8 +138,6 @@ export class FomoObserver {
       observationSeconds: elapsed,
       developmentStatus: reasons.length === 0 ? 'qualified' : 'developing',
       checkpoints: [],
-      buyVolumeUsd,
-      sellVolumeUsd,
     };
   }
 
@@ -151,8 +147,8 @@ export class FomoObserver {
       score: report.score,
       trades: report.trades,
       uniqueBuyers: report.uniqueBuyers,
-      buyVolumeSol: report.buyVolumeUsd,
-      sellVolumeSol: report.sellVolumeUsd,
+      buyVolumeSol: report.buyVolumeSol,
+      sellVolumeSol: report.sellVolumeSol,
       buySellRatio: report.buySellRatio,
       largestBuyerPct: report.largestBuyerPct,
       priceChangePct: 0,
