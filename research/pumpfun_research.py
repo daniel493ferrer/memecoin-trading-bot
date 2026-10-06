@@ -2,58 +2,56 @@
 """
 Pump.fun early-life research engine.
 
-Runs locally against the public Slinky21/Pumpfun_Memecoin_Corpus parquet files.
-No dataset download is required: DuckDB can scan the public parquet URLs directly.
+Discovery-first research:
+- uses trade-level data for true early-life timing;
+- does not hard-code a "large move" percentage;
+- measures the empirical forward-return distribution;
+- keeps research separate from live trading.
 
-Primary objective:
-  discover which early-life states contain predictive information about
-  unusually large forward moves, without hard-coding a return threshold.
-
-This is research only. It does not alter live trading configuration.
+The corpus documents second-by-second trade data and 15-second snapshots.
+Trade-level data is therefore the correct source for 5/10/15/20/30/45/60s
+entry-timing research. Snapshots can be used later as complementary features.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from pathlib import Path
-from typing import Iterable
 
 import duckdb
 
 DATASET = "Slinky21/Pumpfun_Memecoin_Corpus"
 BASE_URL = f"https://huggingface.co/datasets/{DATASET}/resolve/main"
 
-CHECKPOINTS = (15, 30, 45, 60)
+CHECKPOINTS = (5, 10, 15, 20, 30, 45, 60)
 FORWARD_WINDOWS = (60, 300, 900, 3600)
 
-# The corpus has changed schema during development. Keep detection explicit
-# instead of silently assuming column names.
 TIME_ALIASES = (
-    "bucket_start",
-    "seconds_since_launch",
-    "seconds_from_launch",
-    "elapsed_seconds",
-    "seconds",
+    "timestamp",
+    "trade_timestamp",
+    "trade_time",
+    "block_time",
+    "created_at",
+    "time",
+    "ts",
 )
 PRICE_ALIASES = (
-    "price_close",
-    "price_high",
-    "price_sol_eob",
     "price_sol",
     "price",
     "market_price_sol",
-    "mcap_price_sol",
+    "price_close",
 )
-MINT_ALIASES = ("mint",)
-BUY_PRESSURE_ALIASES = ("buy_pressure", "buy_pressure_pct", "buy_ratio")
-TRADE_RATE_ALIASES = ("trade_velocity", "trade_rate", "trades_per_second")
-CURVE_ALIASES = ("curve_pct_depleted_eob", "curve_pct_depleted")
-BUY_VOL_ALIASES = ("buy_volume_sol", "buy_vol_sol", "volume_buy_sol")
-SELL_VOL_ALIASES = ("sell_volume_sol", "sell_vol_sol", "volume_sell_sol")
-TRADES_ALIASES = ("trade_count", "trades", "trades_eob", "num_trades")
+SIDE_ALIASES = ("tx_type", "side", "trade_type", "type", "is_buy")
+TRADER_ALIASES = (
+    "trader_public_key",
+    "trader",
+    "wallet",
+    "user",
+    "user_public_key",
+    "buyer",
+)
 
 
 def ident(name: str) -> str:
@@ -64,163 +62,150 @@ def remote(name: str) -> str:
     return f"{BASE_URL}/{name}"
 
 
-def columns(con: duckdb.DuckDBPyConnection, file_name: str) -> list[str]:
+def schema(con: duckdb.DuckDBPyConnection, file_name: str) -> dict[str, str]:
     rows = con.execute(
-        "SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet(?))",
+        "SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet(?))",
         [remote(file_name)],
     ).fetchall()
-    return [str(r[0]) for r in rows]
+    return {str(name).lower(): str(typ) for name, typ in rows}
 
 
-def choose(cols: Iterable[str], aliases: Iterable[str]) -> str | None:
-    lower = {c.lower(): c for c in cols}
+def choose(cols: dict[str, str], aliases: tuple[str, ...]) -> str | None:
     for alias in aliases:
-        if alias.lower() in lower:
-            return lower[alias.lower()]
+        if alias.lower() in cols:
+            return alias
     return None
 
 
 def require(name: str, value: str | None) -> str:
     if value is None:
-        raise RuntimeError(
-            f"Required snapshot column not found for {name}. "
-            f"Run this script once with --describe to inspect the live schema."
-        )
+        raise RuntimeError(f"Required trade column not found for {name}.")
     return value
 
 
-def finite(x: object) -> bool:
-    try:
-        return math.isfinite(float(x))
-    except (TypeError, ValueError):
-        return False
-
-
 def describe(con: duckdb.DuckDBPyConnection) -> None:
-    for file_name in ("snapshots.parquet", "tokens.parquet", "postgard_outcomes.parquet"):
+    for file_name in ("trades.parquet", "snapshots.parquet", "tokens.parquet"):
         print(f"\n=== {file_name} ===")
-        rows = con.execute(
-            "SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet(?))",
-            [remote(file_name)],
-        ).fetchall()
-        for name, typ in rows:
+        for name, typ in schema(con, file_name).items():
             print(f"{name}\t{typ}")
 
 
-def build_query(
-    mint: str,
+def time_expr(col: str, typ: str) -> str:
+    t = typ.upper()
+    ref = f"tr.{ident(col)}"
+    if "TIMESTAMP" in t or t.startswith("DATE"):
+        return f"TRY_CAST({ref} AS TIMESTAMP)"
+    if any(x in t for x in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL")):
+        return f"to_timestamp(TRY_CAST({ref} AS DOUBLE))"
+    return (
+        f"COALESCE(TRY_CAST({ref} AS TIMESTAMP), "
+        f"to_timestamp(TRY_CAST({ref} AS DOUBLE)))"
+    )
+
+
+def side_expr(col: str, typ: str) -> str:
+    ref = f"tr.{ident(col)}"
+    if col.lower() == "is_buy":
+        return f"TRY_CAST({ref} AS BOOLEAN)"
+    return f"LOWER(CAST({ref} AS VARCHAR)) IN ('buy', 'b')"
+
+
+def build_trade_query(
+    mint_col: str,
     time_col: str,
+    time_type: str,
     price_col: str,
-    feature_cols: dict[str, str | None],
+    side_col: str,
+    trader_col: str | None,
 ) -> str:
-    """Build a leak-safe early-life query using actual elapsed time."""
-    feature_select = []
-    for alias, col in feature_cols.items():
-        if col:
-            feature_select.append(f"s.{ident(col)} AS {alias}")
-        else:
-            feature_select.append(f"NULL::DOUBLE AS {alias}")
-    feature_sql = ",\n        ".join(feature_select)
     max_time = max(CHECKPOINTS) + max(FORWARD_WINDOWS)
+    side = side_expr(side_col, "")
+    trader = (
+        f"CAST(tr.{ident(trader_col)} AS VARCHAR)"
+        if trader_col
+        else "NULL::VARCHAR"
+    )
 
-    forward_select = []
-    for seconds in FORWARD_WINDOWS:
-        forward_select.append(
-            f"""MAX(price) OVER (
-                PARTITION BY mint
-                ORDER BY t
-                RANGE BETWEEN CURRENT ROW AND {seconds} FOLLOWING
-            ) AS future_max_{seconds}s"""
+    aggs: list[str] = []
+    for cp in CHECKPOINTS:
+        aggs.extend(
+            [
+                f"arg_max(t, t) FILTER (WHERE t <= {cp}) AS t_{cp}",
+                f"arg_max(price, t) FILTER (WHERE t <= {cp}) AS price_{cp}",
+                f"COUNT(*) FILTER (WHERE t <= {cp}) AS trade_count_{cp}",
+                f"COUNT(DISTINCT trader) FILTER (WHERE t <= {cp}) AS unique_traders_{cp}",
+                f"COUNT(*) FILTER (WHERE t <= {cp} AND is_buy) AS buy_count_{cp}",
+                f"COUNT(*) FILTER (WHERE t <= {cp} AND NOT is_buy) AS sell_count_{cp}",
+                f"MAX(price) FILTER (WHERE t <= {cp}) AS peak_price_{cp}",
+            ]
         )
-    forward_sql = ",\n        ".join(forward_select)
-
-    checkpoint_aggs = [
-        "        arg_max(t, t) FILTER (WHERE t <= {0}) AS t_{0}".format(cp)
-        for cp in CHECKPOINTS
-    ]
-    for cp in CHECKPOINTS:
-        for alias in list(feature_cols.keys()) + ["price"]:
-            checkpoint_aggs.append(
-                "        arg_max({0}, t) FILTER (WHERE t <= {1}) AS {0}_{1}".format(alias, cp)
+        for h in FORWARD_WINDOWS:
+            aggs.append(
+                f"MAX(price) FILTER (WHERE t > {cp} AND t <= {cp + h}) "
+                f"AS future_max_{h}s_{cp}"
             )
-        for seconds in FORWARD_WINDOWS:
-            checkpoint_aggs.append(
-                "        arg_max(future_max_{0}s, t) FILTER (WHERE t <= {1}) AS future_max_{0}s_{1}".format(seconds, cp)
-            )
-    checkpoint_sql = ",\n".join(checkpoint_aggs)
 
-    union_parts = []
+    union_parts: list[str] = []
     for cp in CHECKPOINTS:
-        feature_names = [
-            "    {0}_{1} AS {0}".format(alias, cp)
-            for alias in list(feature_cols.keys()) + ["price"]
+        select = [
+            "mint",
+            f"{cp} AS checkpoint_s",
+            f"t_{cp} AS t",
+            f"price_{cp} AS price",
+            f"trade_count_{cp} AS trade_count",
+            f"unique_traders_{cp} AS unique_traders",
+            f"buy_count_{cp} AS buy_count",
+            f"sell_count_{cp} AS sell_count",
+            f"peak_price_{cp} AS peak_price",
         ]
-        future_names = [
-            "    future_max_{0}s_{1} AS future_max_{0}s".format(seconds, cp)
-            for seconds in FORWARD_WINDOWS
-        ]
-        select_list = ["    mint", "    {0} AS checkpoint_s".format(cp), "    t_{0} AS t".format(cp)]
-        select_list += feature_names + future_names
-        for seconds in FORWARD_WINDOWS:
-            select_list.append(
-                "    100.0 * (future_max_{0}s_{1} / price_{1} - 1.0) AS forward_max_pct_{0}s".format(seconds, cp)
+        for h in FORWARD_WINDOWS:
+            select.extend(
+                [
+                    f"future_max_{h}s_{cp} AS future_max_{h}s",
+                    f"100.0 * (future_max_{h}s_{cp} / price_{cp} - 1.0) "
+                    f"AS forward_max_pct_{h}s",
+                ]
             )
         union_parts.append(
-            "SELECT\n" + ",\n".join(select_list) + "\nFROM wide\nWHERE t_{0} IS NOT NULL".format(cp)
+            "SELECT\n    "
+            + ",\n    ".join(select)
+            + f"\nFROM wide\nWHERE t_{cp} IS NOT NULL AND price_{cp} > 0"
         )
-    union_sql = "\nUNION ALL\n".join(union_parts)
 
-    if time_col == "bucket_start":
-        time_expr = "EXTRACT(EPOCH FROM (s.bucket_start - tok.detected_at))"
-        time_filter = "s.bucket_start >= tok.detected_at AND s.bucket_start <= tok.detected_at + INTERVAL '{0} seconds'".format(max_time)
-        source_sql = """FROM read_parquet('{0}') s
-    JOIN read_parquet('{1}') tok ON s.mint = tok.mint
-    WHERE {2}""".format(remote("snapshots.parquet"), remote("tokens.parquet"), time_filter)
-    else:
-        time_expr = "TRY_CAST(s.{0} AS DOUBLE)".format(ident(time_col))
-        source_sql = """FROM read_parquet('{0}') s
-    WHERE {1} BETWEEN 0 AND {2}""".format(remote("snapshots.parquet"), ident(time_col), max_time)
-
-    return """WITH raw AS (
+    return f"""
+WITH raw AS (
     SELECT
-        s.{mint} AS mint,
-        TRY_CAST({time_expr} AS DOUBLE) AS t,
-        TRY_CAST(s.{price} AS DOUBLE) AS price,
-        {features}
-    {source}
+        tr.{ident(mint_col)} AS mint,
+        EXTRACT(EPOCH FROM (
+            {time_expr(time_col, time_type)} - tok.detected_at
+        )) AS t,
+        TRY_CAST(tr.{ident(price_col)} AS DOUBLE) AS price,
+        {side} AS is_buy,
+        {trader} AS trader
+    FROM read_parquet('{remote("trades.parquet")}') tr
+    JOIN read_parquet('{remote("tokens.parquet")}') tok
+      ON tr.{ident(mint_col)} = tok.mint
+    WHERE {time_expr(time_col, time_type)} >= tok.detected_at
+      AND {time_expr(time_col, time_type)}
+          <= tok.detected_at + INTERVAL '{max_time} seconds'
 ),
 clean AS (
     SELECT *
     FROM raw
     WHERE mint IS NOT NULL
-      AND t IS NOT NULL
       AND t BETWEEN 0 AND {max_time}
       AND price IS NOT NULL
       AND price > 0
 ),
-with_future AS (
-    SELECT *, {forward}
-    FROM clean
-),
 wide AS (
     SELECT
         mint,
-        {checkpoint_aggs}
-    FROM with_future
+        {", ".join(aggs)}
+    FROM clean
     GROUP BY mint
 )
-{union_sql}
-""".format(
-        mint=ident(mint),
-        time_expr=time_expr,
-        price=ident(price_col),
-        features=feature_sql,
-        source=source_sql,
-        max_time=max_time,
-        forward=forward_sql,
-        checkpoint_aggs=checkpoint_sql,
-        union_sql=union_sql,
-    )
+{" UNION ALL ".join(union_parts)}
+"""
 
 
 def main() -> int:
@@ -238,83 +223,85 @@ def main() -> int:
     con.execute("SET preserve_insertion_order=false")
     temp_dir = str(out_dir / ".duckdb_tmp").replace("'", "''")
     con.execute(f"SET temp_directory='{temp_dir}'")
-
-    cpu_count = os.cpu_count() or 4
-    threads = min(16, max(4, cpu_count))
+    threads = min(16, max(4, os.cpu_count() or 4))
     con.execute(f"SET threads={threads}")
 
     if args.describe:
         describe(con)
         return 0
 
-    snapshot_cols = columns(con, "snapshots.parquet")
-    mint = choose(snapshot_cols, MINT_ALIASES)
-    time_col = choose(snapshot_cols, TIME_ALIASES)
-    price_col = choose(snapshot_cols, PRICE_ALIASES)
+    trade_schema = schema(con, "trades.parquet")
+    mint_col = choose(trade_schema, ("mint",))
+    time_col = choose(trade_schema, TIME_ALIASES)
+    price_col = choose(trade_schema, PRICE_ALIASES)
+    side_col = choose(trade_schema, SIDE_ALIASES)
+    trader_col = choose(trade_schema, TRADER_ALIASES)
 
-    print("Dataset:", DATASET)
-    print("Snapshot columns:", len(snapshot_cols))
-    print(f"Using snapshot checkpoints: {CHECKPOINTS}s")
-    print("Using bounded early-life scan: 0-3660s")
-    print("mint:", mint)
-    print("time:", time_col)
-    print("price:", price_col)
-
-    require("mint", mint)
+    require("mint", mint_col)
     require("time", time_col)
     require("price", price_col)
+    require("side", side_col)
 
-    feature_cols = {
-        "buy_pressure": choose(snapshot_cols, BUY_PRESSURE_ALIASES),
-        "trade_rate": choose(snapshot_cols, TRADE_RATE_ALIASES),
-        "curve_pct": choose(snapshot_cols, CURVE_ALIASES),
-        "buy_volume_sol": choose(snapshot_cols, BUY_VOL_ALIASES),
-        "sell_volume_sol": choose(snapshot_cols, SELL_VOL_ALIASES),
-        "trade_count": choose(snapshot_cols, TRADES_ALIASES),
-    }
+    print("Dataset:", DATASET)
+    print("Source: trades.parquet + tokens.parquet")
+    print("Checkpoints:", CHECKPOINTS)
+    print("Forward windows:", FORWARD_WINDOWS)
+    print("mint:", mint_col)
+    print("time:", time_col, trade_schema[time_col.lower()])
+    print("price:", price_col)
+    print("side:", side_col)
+    print("trader:", trader_col)
 
-    print("Features:")
-    for k, v in feature_cols.items():
-        print(f"  {k}: {v}")
+    query = build_trade_query(
+        mint_col,
+        time_col,
+        trade_schema[time_col.lower()],
+        price_col,
+        side_col,
+        trader_col,
+    )
 
-    query = build_query(mint, time_col, price_col, feature_cols)
     features_path = out_dir / "early_move_features.parquet"
     summary_path = out_dir / "early_move_summary.json"
 
-    print("Building row-level research features (single remote scan)...")
+    print("Building trade-level research features (single remote scan)...")
     con.execute(
-        "COPY (" + query + ") TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)",
+        "COPY (" + query + ") TO ? "
+        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)",
         [str(features_path)],
     )
 
     print("Computing distribution summary from local parquet...")
-    stats = []
+    stats: list[str] = []
     for h in FORWARD_WINDOWS:
-        stats.extend([
-            f"quantile_cont(forward_max_pct_{h}s, 0.50) AS p50_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.75) AS p75_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.90) AS p90_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.95) AS p95_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.99) AS p99_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.995) AS p995_{h}s",
-            f"quantile_cont(forward_max_pct_{h}s, 0.999) AS p999_{h}s",
-            f"MAX(forward_max_pct_{h}s) AS max_{h}s",
-        ])
+        for p, alias in (
+            (0.50, "p50"),
+            (0.75, "p75"),
+            (0.90, "p90"),
+            (0.95, "p95"),
+            (0.99, "p99"),
+            (0.995, "p995"),
+            (0.999, "p999"),
+        ):
+            stats.append(
+                f"quantile_cont(forward_max_pct_{h}s, {p}) AS {alias}_{h}s"
+            )
+        stats.append(f"MAX(forward_max_pct_{h}s) AS max_{h}s")
 
-    summary_query = f"""
-    SELECT
-        checkpoint_s,
-        COUNT(*) AS samples,
-        {", ".join(stats)}
-    FROM read_parquet(?)
-    GROUP BY checkpoint_s
-    ORDER BY checkpoint_s
-    """
-    summary_rows = con.execute(summary_query, [str(features_path)]).fetchall()
-    summary_columns = [d[0] for d in con.description]
+    rows = con.execute(
+        f"""
+        SELECT checkpoint_s, COUNT(*) AS samples, {", ".join(stats)}
+        FROM read_parquet(?)
+        GROUP BY checkpoint_s
+        ORDER BY checkpoint_s
+        """,
+        [str(features_path)],
+    ).fetchall()
+    columns = [d[0] for d in con.description]
 
     summary: dict[str, object] = {
         "dataset": DATASET,
+        "source": "trade-level",
         "checkpoints_seconds": list(CHECKPOINTS),
         "forward_windows_seconds": list(FORWARD_WINDOWS),
         "objective": (
@@ -323,26 +310,28 @@ def main() -> int:
         ),
         "checkpoints": {},
         "note": (
-            "Exploratory full-corpus analysis. Return thresholds are not "
-            "hard-coded trading rules. OOS validation, costs, slippage and "
-            "walk-forward testing are still required."
+            "Exploratory analysis only. No return threshold is a trading rule. "
+            "Next stages must discover feature combinations, entry timing, "
+            "exit behavior and validate them walk-forward out-of-sample."
         ),
     }
 
-    for row in summary_rows:
-        values = dict(zip(summary_columns, row))
-        cp = str(int(values["checkpoint_s"]))
-        item: dict[str, object] = {"samples": int(values["samples"])}
+    for row in rows:
+        v = dict(zip(columns, row))
+        cp = str(int(v["checkpoint_s"]))
+        item: dict[str, object] = {
+            "samples": int(v["samples"]),
+        }
         for h in FORWARD_WINDOWS:
             item[f"forward_{h}s_pct"] = {
-                "p50": round(float(values[f"p50_{h}s"]), 4),
-                "p75": round(float(values[f"p75_{h}s"]), 4),
-                "p90": round(float(values[f"p90_{h}s"]), 4),
-                "p95": round(float(values[f"p95_{h}s"]), 4),
-                "p99": round(float(values[f"p99_{h}s"]), 4),
-                "p99_5": round(float(values[f"p995_{h}s"]), 4),
-                "p99_9": round(float(values[f"p999_{h}s"]), 4),
-                "max": round(float(values[f"max_{h}s"]), 4),
+                "p50": round(float(v[f"p50_{h}s"]), 4),
+                "p75": round(float(v[f"p75_{h}s"]), 4),
+                "p90": round(float(v[f"p90_{h}s"]), 4),
+                "p95": round(float(v[f"p95_{h}s"]), 4),
+                "p99": round(float(v[f"p99_{h}s"]), 4),
+                "p99_5": round(float(v[f"p995_{h}s"]), 4),
+                "p99_9": round(float(v[f"p999_{h}s"]), 4),
+                "max": round(float(v[f"max_{h}s"]), 4),
             }
         summary["checkpoints"][cp] = item
 
