@@ -1,17 +1,14 @@
 import { defaultStrategy } from './default/index.js';
 import { momentumStrategy } from './momentum/index.js';
+import { earlyQualityStrategy } from './early-quality/index.js';
 import type { TradingStrategy } from './types.js';
 
 const strategies = new Map<string, TradingStrategy>([
   [defaultStrategy.name, defaultStrategy],
   [momentumStrategy.name, momentumStrategy],
+  [earlyQualityStrategy.name, earlyQualityStrategy],
 ]);
 
-/**
- * Add custom strategies to the registry above, then select one through
- * config.json. Keeping registration explicit catches misspelled names before
- * the bot connects to any trading feeds.
- */
 export function createStrategy(name: string): TradingStrategy {
   const strategy = strategies.get(name);
   if (!strategy) {
