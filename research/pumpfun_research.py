@@ -6,8 +6,8 @@ Runs locally against the public Slinky21/Pumpfun_Memecoin_Corpus parquet files.
 No dataset download is required: DuckDB can scan the public parquet URLs directly.
 
 Primary objective:
-  determine whether 5/10/15/20/30/45/60s observations contain enough
-  information to predict large forward moves (+100/+300/+600/+1000%).
+  discover which early-life states contain predictive information about
+  unusually large forward moves, without hard-coding a return threshold.
 
 This is research only. It does not alter live trading configuration.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -25,7 +26,7 @@ import duckdb
 DATASET = "Slinky21/Pumpfun_Memecoin_Corpus"
 BASE_URL = f"https://huggingface.co/datasets/{DATASET}/resolve/main"
 
-CHECKPOINTS = (5, 10, 15, 20, 30, 45, 60)
+CHECKPOINTS = (15, 30, 45, 60)
 FORWARD_WINDOWS = (60, 300, 900, 3600)
 
 # The corpus has changed schema during development. Keep detection explicit
@@ -228,12 +229,17 @@ def main() -> int:
     parser.add_argument("--describe", action="store_true")
     args = parser.parse_args()
 
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     con = duckdb.connect()
     con.execute("SET enable_progress_bar=true")
-    # Allow DuckDB to spill intermediate state instead of letting the OS kill
-    # the process when the local machine has limited RAM.
     con.execute("SET memory_limit='2GB'")
-    con.execute("SET temp_directory='research/results/.duckdb_tmp'")
+    con.execute("SET preserve_insertion_order=false")
+    con.execute("SET temp_directory=?", [str(out_dir / ".duckdb_tmp")])
+
+    cpu_count = os.cpu_count() or 4
+    con.execute("SET threads=?", [min(16, max(4, cpu_count))])
 
     if args.describe:
         describe(con)
@@ -246,6 +252,7 @@ def main() -> int:
 
     print("Dataset:", DATASET)
     print("Snapshot columns:", len(snapshot_cols))
+    print(f"Using snapshot checkpoints: {CHECKPOINTS}s")
     print("Using bounded early-life scan: 0-3660s")
     print("mint:", mint)
     print("time:", time_col)
@@ -269,37 +276,54 @@ def main() -> int:
         print(f"  {k}: {v}")
 
     query = build_query(mint, time_col, price_col, feature_cols)
+    features_path = out_dir / "early_move_features.parquet"
+    summary_path = out_dir / "early_move_summary.json"
 
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    print("Building row-level research features (single remote scan)...")
+    con.execute(
+        "COPY (" + query + ") TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)",
+        [str(features_path)],
+    )
 
-    # Aggregate in DuckDB; do not fetch millions of rows into Python.
+    print("Computing distribution summary from local parquet...")
+    stats = []
+    for h in FORWARD_WINDOWS:
+        stats.extend([
+            f"quantile_cont(forward_max_pct_{h}s, 0.50) AS p50_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.75) AS p75_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.90) AS p90_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.95) AS p95_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.99) AS p99_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.995) AS p995_{h}s",
+            f"quantile_cont(forward_max_pct_{h}s, 0.999) AS p999_{h}s",
+            f"MAX(forward_max_pct_{h}s) AS max_{h}s",
+        ])
+
     summary_query = f"""
-    WITH data AS ({query})
     SELECT
         checkpoint_s,
         COUNT(*) AS samples,
-        {", ".join(
-            f"SUM(CASE WHEN forward_max_pct_{h}s >= {target} THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS hit_{h}s_{target}"
-            for h in FORWARD_WINDOWS
-            for target in (100, 300, 600, 1000)
-        )}
-    FROM data
+        {", ".join(stats)}
+    FROM read_parquet(?)
     GROUP BY checkpoint_s
     ORDER BY checkpoint_s
     """
-    summary_rows = con.execute(summary_query).fetchall()
+    summary_rows = con.execute(summary_query, [str(features_path)]).fetchall()
     summary_columns = [d[0] for d in con.description]
 
     summary: dict[str, object] = {
         "dataset": DATASET,
-        "checkpoints_seconds": CHECKPOINTS,
-        "forward_windows_seconds": FORWARD_WINDOWS,
-        "targets_pct": [100, 300, 600, 1000],
+        "checkpoints_seconds": list(CHECKPOINTS),
+        "forward_windows_seconds": list(FORWARD_WINDOWS),
+        "objective": (
+            "Discover predictive early-life states and naturally occurring "
+            "exceptional forward-move regimes from the empirical distribution."
+        ),
         "checkpoints": {},
         "note": (
-            "Exploratory full-corpus early-life snapshot analysis. "
-            "This is not OOS trading validation or profitability evidence."
+            "Exploratory full-corpus analysis. Return thresholds are not "
+            "hard-coded trading rules. OOS validation, costs, slippage and "
+            "walk-forward testing are still required."
         ),
     }
 
@@ -308,27 +332,22 @@ def main() -> int:
         cp = str(int(values["checkpoint_s"]))
         item: dict[str, object] = {"samples": int(values["samples"])}
         for h in FORWARD_WINDOWS:
-            item[f"hit_{h}s"] = {
-                f"+{target}%": round(float(values[f"hit_{h}s_{target}"]), 4)
-                if values[f"hit_{h}s_{target}"] is not None
-                else None
-                for target in (100, 300, 600, 1000)
+            item[f"forward_{h}s_pct"] = {
+                "p50": round(float(values[f"p50_{h}s"]), 4),
+                "p75": round(float(values[f"p75_{h}s"]), 4),
+                "p90": round(float(values[f"p90_{h}s"]), 4),
+                "p95": round(float(values[f"p95_{h}s"]), 4),
+                "p99": round(float(values[f"p99_{h}s"]), 4),
+                "p99_5": round(float(values[f"p995_{h}s"]), 4),
+                "p99_9": round(float(values[f"p999_{h}s"]), 4),
+                "max": round(float(values[f"max_{h}s"]), 4),
             }
         summary["checkpoints"][cp] = item
 
-    (out_dir / "early_move_summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
-    )
-
-    print("Writing row-level research features...")
-    con.execute(
-        "COPY (" + query + ") TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
-        [str(out_dir / "early_move_features.parquet")],
-    )
-
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    print(f"\nWrote: {out_dir / 'early_move_summary.json'}")
-    print(f"Wrote: {out_dir / 'early_move_features.parquet'}")
+    print(f"\nWrote: {summary_path}")
+    print(f"Wrote: {features_path}")
     return 0
 
 
