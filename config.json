@@ -26,8 +26,8 @@
   "observation": {
     "enabled": true,
     "durationSeconds": 60,
-    "minObservationSeconds": 10,
-    "checkpointsSeconds": [10, 20, 30, 45, 60],
+    "minObservationSeconds": 5,
+    "checkpointsSeconds": [5, 10, 20, 30, 45, 60],
     "maxConcurrentCandidates": 25,
     "minTrades": 5,
     "minUniqueBuyers": 3,
