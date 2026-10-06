@@ -31,12 +31,21 @@ FORWARD_WINDOWS = (60, 300, 900, 3600)
 # The corpus has changed schema during development. Keep detection explicit
 # instead of silently assuming column names.
 TIME_ALIASES = (
+    "bucket_seconds",
     "seconds_since_launch",
     "seconds_from_launch",
     "elapsed_seconds",
     "seconds",
 )
-PRICE_ALIASES = ("price_sol", "price", "market_price_sol", "mcap_price_sol")
+PRICE_ALIASES = (
+    "price_close",
+    "price_high",
+    "price_sol_eob",
+    "price_sol",
+    "price",
+    "market_price_sol",
+    "mcap_price_sol",
+)
 MINT_ALIASES = ("mint",)
 BUY_PRESSURE_ALIASES = ("buy_pressure", "buy_pressure_pct", "buy_ratio")
 TRADE_RATE_ALIASES = ("trade_velocity", "trade_rate", "trades_per_second")
@@ -103,8 +112,8 @@ def build_query(
     price_col: str,
     feature_cols: dict[str, str | None],
 ) -> str:
-    # A single scan creates the time-normalized feature rows and all forward
-    # maximum labels. RANGE is in seconds because t is cast to DOUBLE.
+    # The current corpus exposes bucket_seconds as elapsed seconds from launch.
+    # Keep the engine schema-driven so older aliases still work if the corpus evolves.
     feature_select = []
     for alias, col in feature_cols.items():
         if col:
@@ -228,6 +237,7 @@ def main() -> int:
 
     print("Dataset:", DATASET)
     print("Snapshot columns:", len(snapshot_cols))
+    print("Using live corpus schema: bucket_seconds / price_close when available")
     print("mint:", mint)
     print("time:", time_col)
     print("price:", price_col)
