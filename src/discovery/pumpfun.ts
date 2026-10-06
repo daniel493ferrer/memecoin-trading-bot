@@ -200,6 +200,7 @@ export class PumpFunStream extends EventEmitter {
           solAmount: Number(msg.solAmount ?? 0),
           tokenAmount: Number(msg.tokenAmount ?? 0),
           price: vSol / vTokens,
+          timestamp: Date.now(),
         };
 
         this.emit('trade', event);
