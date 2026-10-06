@@ -23,14 +23,25 @@ export class SafetyChecker {
 
   async check(candidate: TokenCandidate): Promise<SafetyReport> {
     const reasons: string[] = [];
-    const mintPk = new PublicKey(candidate.mint);
+    let mintPk: PublicKey;
 
-    // --- mint account: decimals + authority flags ---
-    // Seconds-old mints often aren't visible at `confirmed` yet, so poll at
-    // `processed` commitment for a few seconds before giving up.
+    try {
+      mintPk = new PublicKey(candidate.mint);
+    } catch {
+      return {
+        ok: false,
+        reasons: ['invalid mint public key'],
+        decimals: 0,
+      };
+    }
+
     const parsed = await this.fetchMintInfo(mintPk);
     if (!parsed) {
-      return { ok: false, reasons: ['mint account not found or not a token mint'], decimals: 0 };
+      return {
+        ok: false,
+        reasons: ['mint account unavailable after RPC retries'],
+        decimals: 0,
+      };
     }
 
     if (this.filters.requireMintAuthorityRevoked && parsed.mintAuthority) {
@@ -40,15 +51,11 @@ export class SafetyChecker {
       reasons.push('freeze authority not revoked (transfers can be frozen)');
     }
 
-    // --- holder concentration (AMM candidates only) ---
-    // Pump.fun launches always fail this naively: the bonding curve holds
-    // nearly the full supply. Their risk is filtered via dev-buy size instead.
     if (candidate.venue === 'amm' && this.filters.maxTop10HolderPct < 100) {
       try {
         const largest = await this.rpc.connection.getTokenLargestAccounts(mintPk);
         const supply = Number(parsed.supply);
         if (supply > 0 && largest.value.length > 1) {
-          // Skip the single largest account — on a fresh pool that is the LP vault.
           const holders = largest.value.slice(1, 11);
           const heldPct =
             (holders.reduce((sum, a) => sum + Number(a.amount), 0) / supply) * 100;
@@ -67,14 +74,32 @@ export class SafetyChecker {
   }
 
   private async fetchMintInfo(mintPk: PublicKey): Promise<ParsedMintInfo | null> {
+    let lastError: unknown = null;
+
     for (let attempt = 0; attempt < 8; attempt++) {
-      const info = await this.rpc.connection
-        .getParsedAccountInfo(mintPk, 'processed')
-        .catch(() => null);
-      const data = info?.value?.data;
-      if (data && 'parsed' in data) return data.parsed.info as ParsedMintInfo;
-      await sleep(750);
+      try {
+        const info = await this.rpc.connection.getParsedAccountInfo(
+          mintPk,
+          'processed',
+        );
+        const data = info.value?.data;
+
+        if (data && 'parsed' in data) {
+          return data.parsed.info as ParsedMintInfo;
+        }
+
+        // The account may not have propagated yet. Keep polling.
+      } catch (error: unknown) {
+        lastError = error;
+      }
+
+      if (attempt < 7) await sleep(750);
     }
+
+    // Do not expose RPC implementation details to the strategy layer, but
+    // distinguish an unavailable RPC response from a valid non-mint account.
+    // A null result is conservatively rejected by the caller.
+    void lastError;
     return null;
   }
 
