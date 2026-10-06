@@ -45,3 +45,20 @@ Genera:
 - `research/results/early_move_features.parquet`
 
 La primera pasada mide, por checkpoint de 5–60 s, la probabilidad histórica de alcanzar +100/+300/+600/+1000% dentro de 1/5/15/60 minutos. Después de esta pasada se construye la validación walk-forward y las reglas de entrada/salida.
+
+
+## Siguiente fase: descubrimiento de estados
+
+Sin volver a escanear los 33.58M trades:
+
+```bash
+python research/state_discovery.py
+```
+
+Genera:
+
+- `research/results/state_discovery.json`
+
+El análisis separa cronológicamente 70% entrenamiento / 30% OOS por token, aprende terciles solo con train y busca estados de una o dos variables en 5–60s para +100/+300/+600/+1000% a 5/15/60 min. El OOS solo evalúa; no selecciona.
+
+No convertir ningún estado en regla del bot todavía. Falta validación con costes, slippage, drawdown y calidad de salida.
