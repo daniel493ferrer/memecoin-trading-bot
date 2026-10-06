@@ -81,22 +81,10 @@ async function main(): Promise<void> {
       return;
     }
 
-    const preflightSafety = safety.check(candidate);
+    // Observe first. Safety RPC checks are intentionally deferred until the
+    // candidate proves it has enough live activity. This prevents a flood of
+    // seconds-old mint RPC lookups from competing with the trade stream.
     const observation = await observer.observe(candidate);
-    const safetyReport = await preflightSafety;
-
-    if (!safetyReport.ok) {
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `preflight safety rejected: ${safetyReport.reasons.join('; ')}`,
-      );
-      log.info(
-        `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
-      );
-      return;
-    }
 
     // The current outcome recorder is fed by the pump.fun trade stream.
     // Do not create fake zero-trade outcomes for Raydium candidates.
@@ -132,6 +120,20 @@ async function main(): Promise<void> {
       `${observation.buyVolumeSol.toFixed(3)} SOL buy volume, ` +
       `${observation.priceChangePct >= 0 ? '+' : ''}${observation.priceChangePct.toFixed(1)}% price`,
     );
+
+    const safetyReport = await safety.check(candidate);
+    if (!safetyReport.ok) {
+      await recorder.record(
+        candidate,
+        observation,
+        'reject',
+        `safety rejected: ${safetyReport.reasons.join('; ')}`,
+      );
+      log.info(
+        `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
+      );
+      return;
+    }
 
     const decision = await strategy.evaluate({ candidate, observation });
     if (!decision.buy) {
