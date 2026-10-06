@@ -36,7 +36,6 @@
     "maxSingleBuyerPct": 60,
     "minPriceChangePct": 0,
     "minScore": 70,
-    "minObservationSeconds": 3,
     "evaluationIntervalMs": 500
   },
   "strategy": {
