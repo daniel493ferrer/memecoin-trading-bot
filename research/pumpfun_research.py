@@ -62,10 +62,32 @@ def remote(name: str) -> str:
     return f"{BASE_URL}/{name}"
 
 
-def schema(con: duckdb.DuckDBPyConnection, file_name: str) -> dict[str, str]:
+def dataset_file_urls(path: str) -> list[str]:
+    """Resolve dataset files through the HF tree API."""
+    import urllib.request
+
+    api = (
+        "https://huggingface.co/api/datasets/"
+        f"{DATASET}/tree/main/{path}?recursive=true&expand=false"
+    )
+    with urllib.request.urlopen(api, timeout=30) as response:
+        entries = json.load(response)
+
+    files = [
+        entry["path"]
+        for entry in entries
+        if entry.get("type") == "file" and entry["path"].endswith(".parquet")
+    ]
+    if not files:
+        raise RuntimeError(f"No parquet files found under dataset path: {path}")
+    return [remote(path) if path.endswith(".parquet") else remote(path) for path in files]
+
+
+def schema(con: duckdb.DuckDBPyConnection, file_urls: list[str]) -> dict[str, str]:
     rows = con.execute(
-        "SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet(?))",
-        [remote(file_name)],
+        "SELECT column_name, column_type "
+        "FROM (DESCRIBE SELECT * FROM read_parquet(?))",
+        [file_urls],
     ).fetchall()
     return {str(name).lower(): str(typ) for name, typ in rows}
 
@@ -182,7 +204,7 @@ WITH raw AS (
         TRY_CAST(tr.{ident(price_col)} AS DOUBLE) AS price,
         {side} AS is_buy,
         {trader} AS trader
-    FROM read_parquet('{remote("trades.parquet")}') tr
+    FROM read_parquet({trade_urls!r}) tr
     JOIN read_parquet('{remote("tokens.parquet")}') tok
       ON tr.{ident(mint_col)} = tok.mint
     WHERE {time_expr(time_col, time_type)} >= tok.detected_at
@@ -230,7 +252,9 @@ def main() -> int:
         describe(con)
         return 0
 
-    trade_schema = schema(con, "trades.parquet")
+    trade_urls = dataset_file_urls("trades")
+    token_urls = dataset_file_urls("")
+    trade_schema = schema(con, trade_urls)
     mint_col = choose(trade_schema, ("mint",))
     time_col = choose(trade_schema, TIME_ALIASES)
     price_col = choose(trade_schema, PRICE_ALIASES)
@@ -243,7 +267,7 @@ def main() -> int:
     require("side", side_col)
 
     print("Dataset:", DATASET)
-    print("Source: trades.parquet + tokens.parquet")
+    print(f"Source: {len(trade_urls)} trade shards + tokens.parquet")
     print("Checkpoints:", CHECKPOINTS)
     print("Forward windows:", FORWARD_WINDOWS)
     print("mint:", mint_col)
