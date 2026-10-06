@@ -72,6 +72,8 @@ export interface PumpTradeEvent {
   tokenAmount: number;
   /** SOL per token derived from the bonding curve reserves after this trade. */
   price: number;
+  /** Local observation timestamp when the stream received the trade. */
+  timestamp: number;
 }
 
 export interface SafetyReport {
