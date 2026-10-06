@@ -75,7 +75,9 @@ export class CandidateRecorder {
     };
     await mkdir(dirname(this.file), { recursive: true });
     await appendFile(this.file, JSON.stringify(record) + '\\n', 'utf8');
-  }\n\n  async record(
+  }
+
+  async record(
     candidate: TokenCandidate,
     observation: ObservationReport,
     decision: 'buy' | 'reject',
