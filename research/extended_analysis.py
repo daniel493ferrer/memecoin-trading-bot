@@ -160,7 +160,6 @@ def add_category_stats(
         SELECT {", ".join(select)}{grad_select}
         {joins}
         """,
-        [str(features), tokens],
     )
 
     result: dict[str, object] = {
