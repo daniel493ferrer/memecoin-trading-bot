@@ -236,10 +236,12 @@ def main() -> int:
     con.execute("SET enable_progress_bar=true")
     con.execute("SET memory_limit='2GB'")
     con.execute("SET preserve_insertion_order=false")
-    con.execute("SET temp_directory=?", [str(out_dir / ".duckdb_tmp")])
+    temp_dir = str(out_dir / ".duckdb_tmp").replace("'", "''")
+    con.execute(f"SET temp_directory='{temp_dir}'")
 
     cpu_count = os.cpu_count() or 4
-    con.execute("SET threads=?", [min(16, max(4, cpu_count))])
+    threads = min(16, max(4, cpu_count))
+    con.execute(f"SET threads={threads}")
 
     if args.describe:
         describe(con)
