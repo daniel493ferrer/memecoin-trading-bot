@@ -289,7 +289,7 @@ def main() -> int:
     query = build_trade_query(
         mint_col,
         time_col,
-        trade_schema[time_col.lower()],
+        trade_schema[time_col.lower()][1] if isinstance(trade_schema[time_col.lower()], tuple) else trade_schema[time_col.lower()],
         price_col,
         side_col,
         trader_col,
