@@ -27,6 +27,7 @@ BASE_URL = f"https://huggingface.co/datasets/{DATASET}/resolve/main"
 
 CHECKPOINTS = (5, 10, 15, 20, 30, 45, 60)
 FORWARD_WINDOWS = (60, 300, 900, 3600)
+ELAPSED_ALIASES = ("seconds_since_launch",)
 
 TIME_ALIASES = (
     "event_time",
@@ -144,8 +145,7 @@ def side_expr(col: str, typ: str) -> str:
 
 def build_trade_query(
     mint_col: str,
-    time_col: str,
-    time_type: str,
+    elapsed_col: str,
     price_col: str,
     side_col: str,
     trader_col: str | None,
@@ -209,18 +209,14 @@ def build_trade_query(
 WITH raw AS (
     SELECT
         tr.{ident(mint_col)} AS mint,
-        EXTRACT(EPOCH FROM (
-            {time_expr(time_col, time_type)} - tok.detected_at
-        )) AS t,
+        TRY_CAST(tr.{ident(elapsed_col)} AS DOUBLE) AS t,
         TRY_CAST(tr.{ident(price_col)} AS DOUBLE) AS price,
         {side} AS is_buy,
         {trader} AS trader
     FROM read_parquet({json.dumps(trade_urls)}) tr
     JOIN read_parquet('{remote("tokens.parquet")}') tok
       ON tr.{ident(mint_col)} = tok.mint
-    WHERE {time_expr(time_col, time_type)} >= tok.detected_at
-      AND {time_expr(time_col, time_type)}
-          <= tok.detected_at + INTERVAL '{max_time} seconds'
+    WHERE TRY_CAST(tr.{ident(elapsed_col)} AS DOUBLE) BETWEEN 0 AND {max_time}
 ),
 clean AS (
     SELECT *
@@ -252,11 +248,11 @@ def main() -> int:
 
     con = duckdb.connect()
     con.execute("SET enable_progress_bar=true")
-    con.execute("SET memory_limit='2GB'")
+    con.execute("SET memory_limit='4GB'")
     con.execute("SET preserve_insertion_order=false")
     temp_dir = str(out_dir / ".duckdb_tmp").replace("'", "''")
     con.execute(f"SET temp_directory='{temp_dir}'")
-    threads = min(16, max(4, os.cpu_count() or 4))
+    threads = min(4, max(1, os.cpu_count() or 1))
     con.execute(f"SET threads={threads}")
 
     if args.describe:
@@ -266,13 +262,13 @@ def main() -> int:
     trade_urls = dataset_file_urls("trades")
     trade_schema = schema(con, trade_urls)
     mint_col = choose(trade_schema, ("mint",))
-    time_col = choose(trade_schema, TIME_ALIASES)
+    elapsed_col = choose(trade_schema, ELAPSED_ALIASES)
     price_col = choose(trade_schema, PRICE_ALIASES)
     side_col = choose(trade_schema, SIDE_ALIASES)
     trader_col = choose(trade_schema, TRADER_ALIASES)
 
     require("mint", mint_col, trade_schema)
-    require("time", time_col, trade_schema)
+    require("elapsed", elapsed_col, trade_schema)
     require("price", price_col, trade_schema)
     require("side", side_col, trade_schema)
 
@@ -281,15 +277,14 @@ def main() -> int:
     print("Checkpoints:", CHECKPOINTS)
     print("Forward windows:", FORWARD_WINDOWS)
     print("mint:", mint_col)
-    print("time:", time_col, trade_schema[time_col.lower()])
+    print("elapsed:", elapsed_col, trade_schema[elapsed_col.lower()])
     print("price:", price_col)
     print("side:", side_col)
     print("trader:", trader_col)
 
     query = build_trade_query(
         mint_col,
-        time_col,
-        trade_schema[time_col.lower()][1] if isinstance(trade_schema[time_col.lower()], tuple) else trade_schema[time_col.lower()],
+        elapsed_col,
         price_col,
         side_col,
         trader_col,
@@ -299,7 +294,7 @@ def main() -> int:
     features_path = out_dir / "early_move_features.parquet"
     summary_path = out_dir / "early_move_summary.json"
 
-    print("Building trade-level research features (single remote scan)...")
+    print("Building trade-level research features (single remote scan, memory-tuned)...")
     con.execute(
         "COPY (" + query + ") TO ? "
         "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)",
