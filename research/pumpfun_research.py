@@ -139,6 +139,7 @@ def build_trade_query(
     price_col: str,
     side_col: str,
     trader_col: str | None,
+    trade_urls: list[str],
 ) -> str:
     max_time = max(CHECKPOINTS) + max(FORWARD_WINDOWS)
     side = side_expr(side_col, "")
@@ -204,7 +205,7 @@ WITH raw AS (
         TRY_CAST(tr.{ident(price_col)} AS DOUBLE) AS price,
         {side} AS is_buy,
         {trader} AS trader
-    FROM read_parquet({trade_urls!r}) tr
+    FROM read_parquet({json.dumps(trade_urls)}) tr
     JOIN read_parquet('{remote("tokens.parquet")}') tok
       ON tr.{ident(mint_col)} = tok.mint
     WHERE {time_expr(time_col, time_type)} >= tok.detected_at
@@ -253,7 +254,6 @@ def main() -> int:
         return 0
 
     trade_urls = dataset_file_urls("trades")
-    token_urls = dataset_file_urls("")
     trade_schema = schema(con, trade_urls)
     mint_col = choose(trade_schema, ("mint",))
     time_col = choose(trade_schema, TIME_ALIASES)
@@ -283,6 +283,7 @@ def main() -> int:
         price_col,
         side_col,
         trader_col,
+        trade_urls,
     )
 
     features_path = out_dir / "early_move_features.parquet"
