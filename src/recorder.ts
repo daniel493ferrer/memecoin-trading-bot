@@ -35,6 +35,9 @@ export interface CandidateRecord {
   tradeRate: number;
   buyAcceleration: number;
   volumeAcceleration: number;
+  observationSeconds: number;
+  developmentStatus: ObservationReport['developmentStatus'];
+  checkpoints: ObservationReport['checkpoints'];
 
   score: number;
   observationOk: boolean;
@@ -85,6 +88,9 @@ export class CandidateRecorder {
       tradeRate: observation.tradeRate,
       buyAcceleration: observation.buyAcceleration,
       volumeAcceleration: observation.volumeAcceleration,
+      observationSeconds: observation.observationSeconds,
+      developmentStatus: observation.developmentStatus,
+      checkpoints: observation.checkpoints,
 
       score: observation.score,
       observationOk: observation.ok,
