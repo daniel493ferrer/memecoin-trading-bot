@@ -31,7 +31,7 @@ FORWARD_WINDOWS = (60, 300, 900, 3600)
 # The corpus has changed schema during development. Keep detection explicit
 # instead of silently assuming column names.
 TIME_ALIASES = (
-    "bucket_seconds",
+    "bucket_start",
     "seconds_since_launch",
     "seconds_from_launch",
     "elapsed_seconds",
@@ -112,26 +112,14 @@ def build_query(
     price_col: str,
     feature_cols: dict[str, str | None],
 ) -> str:
-    """
-    Build a bounded early-life query.
-
-    The previous implementation cross-joined every snapshot row with seven
-    checkpoints and materialized the full result in Python. On the full corpus
-    that can explode into hundreds of millions of intermediate rows.
-
-    The live corpus exposes bucket_seconds as elapsed time from launch. We only
-    need rows through checkpoint + maximum forward horizon (60 + 3600 = 3660s),
-    and the corpus has checkpoint buckets matching the requested seconds.
-    """
+    """Build a leak-safe early-life query using actual elapsed time."""
     feature_select = []
     for alias, col in feature_cols.items():
         if col:
             feature_select.append(f"{ident(col)} AS {alias}")
         else:
             feature_select.append(f"NULL::DOUBLE AS {alias}")
-
     feature_sql = ",\n        ".join(feature_select)
-    checkpoint_values = ",".join(str(x) for x in CHECKPOINTS)
     max_time = max(CHECKPOINTS) + max(FORWARD_WINDOWS)
 
     forward_select = []
@@ -145,53 +133,93 @@ def build_query(
         )
     forward_sql = ",\n        ".join(forward_select)
 
-    return f"""
-WITH raw AS (
+    checkpoint_aggs = [
+        "        arg_max(t, t) FILTER (WHERE t <= {0}) AS t_{0}".format(cp)
+        for cp in CHECKPOINTS
+    ]
+    for cp in CHECKPOINTS:
+        for alias in list(feature_cols.keys()) + ["price"]:
+            checkpoint_aggs.append(
+                "        arg_max({0}, t) FILTER (WHERE t <= {1}) AS {0}_{1}".format(alias, cp)
+            )
+        for seconds in FORWARD_WINDOWS:
+            checkpoint_aggs.append(
+                "        arg_max(future_max_{0}s, t) FILTER (WHERE t <= {1}) AS future_max_{0}s_{1}".format(seconds, cp)
+            )
+    checkpoint_sql = ",\n".join(checkpoint_aggs)
+
+    union_parts = []
+    for cp in CHECKPOINTS:
+        feature_names = [
+            "    {0}_{1} AS {0}".format(alias, cp)
+            for alias in list(feature_cols.keys()) + ["price"]
+        ]
+        future_names = [
+            "    future_max_{0}s_{1} AS future_max_{0}s".format(seconds, cp)
+            for seconds in FORWARD_WINDOWS
+        ]
+        select_list = ["    mint", "    {0} AS checkpoint_s".format(cp), "    t_{0} AS t".format(cp)]
+        select_list += feature_names + future_names
+        for seconds in FORWARD_WINDOWS:
+            select_list.append(
+                "    100.0 * (future_max_{0}s_{1} / price_{1} - 1.0) AS forward_max_pct_{0}s".format(seconds, cp)
+            )
+        union_parts.append(
+            "SELECT\n" + ",\n".join(select_list) + "\nFROM wide\nWHERE t_{0} IS NOT NULL".format(cp)
+        )
+    union_sql = "\nUNION ALL\n".join(union_parts)
+
+    if time_col == "bucket_start":
+        time_expr = "EXTRACT(EPOCH FROM (s.bucket_start - tok.detected_at))"
+        time_filter = "s.bucket_start >= tok.detected_at AND s.bucket_start <= tok.detected_at + INTERVAL '{0} seconds'".format(max_time)
+        source_sql = """FROM read_parquet('{0}') s
+    JOIN read_parquet('{1}') tok ON s.mint = tok.mint
+    WHERE {2}""".format(remote("snapshots.parquet"), remote("tokens.parquet"), time_filter)
+    else:
+        time_expr = "TRY_CAST(s.{0} AS DOUBLE)".format(ident(time_col))
+        source_sql = """FROM read_parquet('{0}') s
+    WHERE {1} BETWEEN 0 AND {2}""".format(remote("snapshots.parquet"), ident(time_col), max_time)
+
+    return """WITH raw AS (
     SELECT
-        {ident(mint)} AS mint,
-        TRY_CAST({ident(time_col)} AS DOUBLE) AS t,
-        TRY_CAST({ident(price_col)} AS DOUBLE) AS price,
-        {feature_sql}
-    FROM read_parquet('{remote("snapshots.parquet")}')
-    WHERE {ident(time_col)} BETWEEN 0 AND {max_time}
+        s.{mint} AS mint,
+        TRY_CAST({time_expr} AS DOUBLE) AS t,
+        TRY_CAST(s.{price} AS DOUBLE) AS price,
+        {features}
+    {source}
 ),
 clean AS (
     SELECT *
     FROM raw
     WHERE mint IS NOT NULL
       AND t IS NOT NULL
+      AND t BETWEEN 0 AND {max_time}
       AND price IS NOT NULL
       AND price > 0
 ),
 with_future AS (
-    SELECT
-        *,
-        {forward_sql}
+    SELECT *, {forward}
     FROM clean
 ),
-picked AS (
+wide AS (
     SELECT
-        *,
-        CAST(t AS BIGINT) AS checkpoint_s
+        mint,
+        {checkpoint_aggs}
     FROM with_future
-    WHERE t IN ({checkpoint_values})
+    GROUP BY mint
 )
-SELECT
-    mint,
-    checkpoint_s,
-    t,
-    price,
-    {", ".join(feature_cols.keys())},
-    future_max_60s,
-    future_max_300s,
-    future_max_900s,
-    future_max_3600s,
-    100.0 * (future_max_60s / price - 1.0) AS forward_max_pct_60s,
-    100.0 * (future_max_300s / price - 1.0) AS forward_max_pct_300s,
-    100.0 * (future_max_900s / price - 1.0) AS forward_max_pct_900s,
-    100.0 * (future_max_3600s / price - 1.0) AS forward_max_pct_3600s
-FROM picked
-"""
+{union_sql}
+""".format(
+        mint=ident(mint),
+        time_expr=time_expr,
+        price=ident(price_col),
+        features=feature_sql,
+        source=source_sql,
+        max_time=max_time,
+        forward=forward_sql,
+        checkpoint_aggs=checkpoint_sql,
+        union_sql=union_sql,
+    )
 
 
 def main() -> int:
