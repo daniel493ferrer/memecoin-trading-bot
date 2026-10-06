@@ -4,9 +4,7 @@ import 'dotenv/config';
 import { z } from 'zod';
 
 const TakeProfitSchema = z.object({
-  /** Price multiple vs entry at which this rung fires (e.g. 2 = +100%). */
   multiple: z.number().gt(1),
-  /** Percent of the *remaining* position to sell when it fires. */
   sellPct: z.number().gt(0).max(100),
 });
 
@@ -19,6 +17,18 @@ const ConfigSchema = z.object({
     }),
     raydium: z.object({
       enabled: z.boolean(),
+    }),
+    fomo: z.object({
+      enabled: z.boolean(),
+      chain: z.literal('solana'),
+      minUsd: z.number().gt(0),
+      observationSeconds: z.number().int().min(5).max(120),
+      minObservationSeconds: z.number().min(1),
+      minUniqueTraders: z.number().int().min(1),
+      minBuyUsd: z.number().gt(0),
+      minBuySellRatio: z.number().min(0),
+      maxSingleTraderPct: z.number().gt(0).max(100),
+      minScore: z.number().min(0).max(100),
     }),
   }),
   filters: z.object({
@@ -83,6 +93,7 @@ const ConfigSchema = z.object({
     jupiterBase: z.string().url(),
     pumpPortalWs: z.string().url(),
     pumpPortalTrade: z.string().url(),
+    fomoWs: z.string().url(),
   }),
 });
 
@@ -91,10 +102,10 @@ export type BotConfig = z.infer<typeof ConfigSchema>;
 export interface Env {
   heliusApiKey: string;
   pumpPortalApiKey: string;
+  fomoApiKey: string;
   liveTrading: boolean;
 }
 
-/** Load and validate config.json + .env. Exits with a clear message on any problem. */
 export function loadConfig(): { config: BotConfig; env: Env } {
   const configPath = path.resolve('config.json');
   if (!fs.existsSync(configPath)) {
@@ -125,7 +136,6 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     ...new Set(parsed.data.observation.checkpointsSeconds),
   ].sort((a, b) => a - b);
 
-  // Take-profit rungs must be sorted ascending so the monitor can fire them in order.
   parsed.data.exit.takeProfits.sort((a, b) => a.multiple - b.multiple);
 
   const heliusApiKey = process.env.HELIUS_API_KEY?.trim();
@@ -137,7 +147,6 @@ export function loadConfig(): { config: BotConfig; env: Env } {
   if (liveTradingRaw !== 'true' && liveTradingRaw !== 'false') {
     throw new Error('LIVE_TRADING must be true or false.');
   }
-  const liveTrading = liveTradingRaw === 'true';
 
   const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim();
   if (!pumpPortalApiKey) {
@@ -146,5 +155,18 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     );
   }
 
-  return { config: parsed.data, env: { heliusApiKey, pumpPortalApiKey, liveTrading } };
+  const fomoApiKey = process.env.FOMO_API_KEY?.trim() ?? '';
+  if (parsed.data.discovery.fomo.enabled && !fomoApiKey) {
+    throw new Error('FOMO_API_KEY is missing while discovery.fomo.enabled=true.');
+  }
+
+  return {
+    config: parsed.data,
+    env: {
+      heliusApiKey,
+      pumpPortalApiKey,
+      fomoApiKey,
+      liveTrading: liveTradingRaw === 'true',
+    },
+  };
 }
