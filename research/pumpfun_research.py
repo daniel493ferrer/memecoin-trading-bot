@@ -29,6 +29,7 @@ CHECKPOINTS = (5, 10, 15, 20, 30, 45, 60)
 FORWARD_WINDOWS = (60, 300, 900, 3600)
 
 TIME_ALIASES = (
+    "event_time",
     "timestamp",
     "timestamp_ms",
     "timestamp_seconds",
@@ -58,6 +59,7 @@ TRADER_ALIASES = (
     "user",
     "user_public_key",
     "buyer",
+    "user_wallet",
 )
 
 
