@@ -1,20 +1,28 @@
 {
   "discovery": {
     "pumpfun": {
-      "enabled": true,
-      "snipeNewTokens": true,
+      "enabled": false,
+      "snipeNewTokens": false,
       "snipeMigrations": false
     },
     "raydium": {
       "enabled": false
+    },
+    "fomo": {
+      "enabled": true,
+      "chain": "solana",
+      "minUsd": 3000,
+      "observationSeconds": 20,
+      "minObservationSeconds": 5,
+      "minUniqueTraders": 2,
+      "minBuyUsd": 5000,
+      "minBuySellRatio": 1.5,
+      "maxSingleTraderPct": 70,
+      "minScore": 65
     }
   },
   "filters": {
-    "symbolBlacklist": [
-      "test",
-      "scam",
-      "rug"
-    ],
+    "symbolBlacklist": ["test", "scam", "rug"],
     "symbolWhitelist": [],
     "minDevBuySol": 0.05,
     "maxDevBuySol": 3,
@@ -39,7 +47,7 @@
     "evaluationIntervalMs": 500
   },
   "strategy": {
-    "name": "momentum"
+    "name": "fomo-flow"
   },
   "entry": {
     "reservePct": 20,
@@ -71,6 +79,7 @@
   "endpoints": {
     "jupiterBase": "https://lite-api.jup.ag",
     "pumpPortalWs": "wss://pumpportal.fun/api/data",
-    "pumpPortalTrade": "https://pumpportal.fun/api/trade-local"
+    "pumpPortalTrade": "https://pumpportal.fun/api/trade-local",
+    "fomoWs": "wss://api.fomoapi.io/ws/alerts"
   }
 }
