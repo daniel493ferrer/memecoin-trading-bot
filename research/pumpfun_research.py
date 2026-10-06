@@ -30,12 +30,19 @@ FORWARD_WINDOWS = (60, 300, 900, 3600)
 
 TIME_ALIASES = (
     "timestamp",
+    "timestamp_ms",
+    "timestamp_seconds",
     "trade_timestamp",
+    "trade_timestamp_ms",
     "trade_time",
     "block_time",
+    "block_timestamp",
+    "block_timestamp_ms",
     "created_at",
     "time",
     "ts",
+    "ts_ms",
+    "unix_timestamp",
 )
 PRICE_ALIASES = (
     "price_sol",
@@ -83,19 +90,19 @@ def dataset_file_urls(path: str) -> list[str]:
     return [remote(path) if path.endswith(".parquet") else remote(path) for path in files]
 
 
-def schema(con: duckdb.DuckDBPyConnection, file_urls: list[str]) -> dict[str, str]:
+def schema(con: duckdb.DuckDBPyConnection, file_urls: list[str]) -> dict[str, tuple[str, str]]:
     rows = con.execute(
         "SELECT column_name, column_type "
         "FROM (DESCRIBE SELECT * FROM read_parquet(?))",
         [file_urls],
     ).fetchall()
-    return {str(name).lower(): str(typ) for name, typ in rows}
+    return {str(name).lower(): (str(name), str(typ)) for name, typ in rows}
 
 
 def choose(cols: dict[str, str], aliases: tuple[str, ...]) -> str | None:
     for alias in aliases:
         if alias.lower() in cols:
-            return alias
+            return cols[alias.lower()][0] if isinstance(cols[alias.lower()], tuple) else alias
     return None
 
 
