@@ -249,45 +249,37 @@ def main() -> int:
         [args.bucket, args.bucket, str(events_path)],
     ).fetchall()
 
-    # Exact requested checkpoints, using all observations at/after that
-    # elapsed time. This is descriptive, not a rule.
+    # Exact requested checkpoints, derived from the 5s bucket profile.
+    # This avoids a checkpoint x 33M-event cross join.
     checkpoint_rows = con.execute(
         """
-        WITH checkpoints(checkpoint_s) AS (
-            SELECT * FROM (VALUES
-                (5),(10),(15),(20),(30),(45),(60),(90),(120),(180),
-                (300),(600),(900),(1200),(1800),(2400),(3600),(5400),(7200)
-            )
-        ),
-        x AS (
+        WITH bucketed AS (
             SELECT
-                c.checkpoint_s,
-                e.mint,
-                e.t,
-                e.remaining_future_upside_pct,
-                e.remaining_lifetime_upside_pct,
-                ROW_NUMBER() OVER (
-                    PARTITION BY c.checkpoint_s, e.mint
-                    ORDER BY ABS(e.t - c.checkpoint_s), e.t
-                ) AS rn
-            FROM checkpoints c
-            JOIN read_parquet(?) e
-              ON e.t >= 0
+                CAST(FLOOR(t / ?) * ? AS BIGINT) AS elapsed_bucket_s,
+                mint,
+                remaining_future_upside_pct,
+                remaining_lifetime_upside_pct
+            FROM read_parquet(?)
+            WHERE t >= 0
         )
         SELECT
-            checkpoint_s,
-            COUNT(*) FILTER (WHERE rn = 1) AS tokens_with_observation,
-            quantile_cont(remaining_future_upside_pct, 0.50) FILTER (WHERE rn = 1) AS future_p50,
-            quantile_cont(remaining_future_upside_pct, 0.75) FILTER (WHERE rn = 1) AS future_p75,
-            quantile_cont(remaining_future_upside_pct, 0.90) FILTER (WHERE rn = 1) AS future_p90,
-            quantile_cont(remaining_future_upside_pct, 0.95) FILTER (WHERE rn = 1) AS future_p95,
-            quantile_cont(remaining_future_upside_pct, 0.99) FILTER (WHERE rn = 1) AS future_p99,
-            quantile_cont(remaining_lifetime_upside_pct) FILTER (WHERE rn = 1) AS lifetime_p50
-        FROM x
-        GROUP BY checkpoint_s
-        ORDER BY checkpoint_s
+            elapsed_bucket_s,
+            COUNT(DISTINCT mint) AS tokens_with_observation,
+            quantile_cont(remaining_future_upside_pct, 0.50) AS future_p50,
+            quantile_cont(remaining_future_upside_pct, 0.75) AS future_p75,
+            quantile_cont(remaining_future_upside_pct, 0.90) AS future_p90,
+            quantile_cont(remaining_future_upside_pct, 0.95) AS future_p95,
+            quantile_cont(remaining_future_upside_pct, 0.99) AS future_p99,
+            quantile_cont(remaining_lifetime_upside_pct, 0.50) AS lifetime_p50
+        FROM bucketed
+        WHERE elapsed_bucket_s IN (
+            5,10,15,20,30,45,60,90,120,180,300,600,900,
+            1200,1800,2400,3600,5400,7200
+        )
+        GROUP BY elapsed_bucket_s
+        ORDER BY elapsed_bucket_s
         """,
-        [str(events_path)],
+        [args.bucket, args.bucket, str(events_path)],
     ).fetchall()
 
     lifetime = dict(
