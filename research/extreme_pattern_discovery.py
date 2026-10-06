@@ -51,7 +51,7 @@ def discover_numeric(con: duckdb.DuckDBPyConnection, path: Path) -> list[str]:
     out = []
     for name, typ, *_ in rows:
         typ = str(typ).upper()
-        if name in LEAKY or name.startswith("forward_") or "peak_" in name:
+        if name in LEAKY or name.startswith("forward_") or "future" in name.lower() or "peak_" in name:
             continue
         if any(x in typ for x in ("DOUBLE", "FLOAT", "DECIMAL", "INTEGER", "BIGINT")):
             out.append(name)
