@@ -147,14 +147,13 @@ def thresholds(con: duckdb.DuckDBPyConnection, checkpoint: int) -> dict[str, tup
         [checkpoint],
     ).fetchone()
     names = [x for f in FEATURES for x in (f"{f}_q33", f"{f}_q67")]
-    return {
-        name.rsplit("_", 1)[0]: (
-            float(rows[i]),
-            float(rows[i + 1]),
-        )
-        for i, name in enumerate(names)
-        if rows[i] is not None and rows[i + 1] is not None
-    }
+    result: dict[str, tuple[float, float]] = {}
+    for index, feature in enumerate(FEATURES):
+        lo = rows[index * 2]
+        hi = rows[index * 2 + 1]
+        if lo is not None and hi is not None:
+            result[feature] = (float(lo), float(hi))
+    return result
 
 
 def bin_expr(feature: str, lo: float, hi: float) -> str:
