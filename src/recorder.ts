@@ -55,7 +55,7 @@ export class CandidateRecorder {
     reason: string,
   ): Promise<void> {
     const timestamp = Date.now();
-    const record = {
+    const record: CandidateRecord = {
       timestamp,
       mint: candidate.mint,
       symbol: candidate.symbol,
@@ -63,14 +63,39 @@ export class CandidateRecorder {
       source: candidate.source,
       venue: candidate.venue,
       discoveredAt: candidate.discoveredAt,
+
       devBuySol: candidate.devBuySol ?? 0,
       initialLiquiditySol: candidate.initialLiquiditySol ?? 0,
+
+      trades: 0,
+      uniqueBuyers: 0,
+      buyVolumeSol: 0,
+      sellVolumeSol: 0,
+      buySellRatio: 0,
+      largestBuyerPct: 0,
+
+      firstPrice: 0,
+      lastPrice: 0,
+      peakPrice: 0,
+      priceChangePct: 0,
+      recentPriceChangePct: 0,
+      recentBuyVolumeSol: 0,
+      recentSellVolumeSol: 0,
+      recentBuySellRatio: 0,
+      recentBuyPressurePct: 0,
+
+      tradeRate: 0,
+      buyAcceleration: 0,
+      volumeAcceleration: 0,
       observationSeconds: 0,
-      developmentStatus: 'expired' as const,
-      observationOk: false,
+      developmentStatus: 'expired',
+      checkpoints: [],
+
       score: 0,
+      observationOk: false,
       reasons: [reason],
-      decision: 'reject' as const,
+
+      decision: 'reject',
       decisionReason: reason,
     };
     await mkdir(dirname(this.file), { recursive: true });
