@@ -93,7 +93,7 @@ def dataset_file_urls(path: str) -> list[str]:
 def schema(con: duckdb.DuckDBPyConnection, file_urls: list[str]) -> dict[str, tuple[str, str]]:
     rows = con.execute(
         "SELECT column_name, column_type "
-        "FROM (DESCRIBE SELECT * FROM read_parquet(?))",
+        "FROM (DESCRIBE SELECT * FROM read_parquet(?, union_by_name=true))",
         [file_urls],
     ).fetchall()
     return {str(name).lower(): (str(name), str(typ)) for name, typ in rows}
@@ -106,9 +106,10 @@ def choose(cols: dict[str, str], aliases: tuple[str, ...]) -> str | None:
     return None
 
 
-def require(name: str, value: str | None) -> str:
+def require(name: str, value: str | None, available: dict | None = None) -> str:
     if value is None:
-        raise RuntimeError(f"Required trade column not found for {name}.")
+        cols = ", ".join(sorted(available or {}))
+        raise RuntimeError(f"Required trade column not found for {name}. Available columns: {cols}")
     return value
 
 
@@ -268,10 +269,10 @@ def main() -> int:
     side_col = choose(trade_schema, SIDE_ALIASES)
     trader_col = choose(trade_schema, TRADER_ALIASES)
 
-    require("mint", mint_col)
-    require("time", time_col)
-    require("price", price_col)
-    require("side", side_col)
+    require("mint", mint_col, trade_schema)
+    require("time", time_col, trade_schema)
+    require("price", price_col, trade_schema)
+    require("side", side_col, trade_schema)
 
     print("Dataset:", DATASET)
     print(f"Source: {len(trade_urls)} trade shards + tokens.parquet")
