@@ -40,7 +40,6 @@ LEAKY = {
     "seconds_to_graduation",
     "peak_market_cap_sol",
     "peak_market_cap_at",
-    "trade_count",
     "data_quality_score",
     "is_training_ready",
     "is_zombie",
