@@ -49,6 +49,10 @@ def qident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def qliteral(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def find_col(columns: dict[str, tuple[str, str]], aliases: tuple[str, ...]) -> str | None:
     for alias in aliases:
         if alias in columns:
@@ -96,7 +100,10 @@ def add_category_stats(
     image_col: str | None,
     grad_col: str | None,
 ) -> dict[str, object]:
-    joins = f"FROM read_parquet(?) f JOIN read_parquet(?) t ON f.mint = t.mint"
+    joins = (
+        f"FROM read_parquet({qliteral(features)}) f "
+        f"JOIN read_parquet({qliteral(tokens)}) t ON f.mint = t.mint"
+    )
 
     feature_exprs: list[str] = []
     if name_col:
