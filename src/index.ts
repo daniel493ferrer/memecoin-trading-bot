@@ -77,6 +77,7 @@ async function main(): Promise<void> {
 
     const rejected = safety.prefilter(candidate);
     if (rejected) {
+      await recorder.recordPrefilterReject(candidate, `prefilter rejected: ${rejected}`);
       log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
       return;
     }
@@ -106,6 +107,18 @@ async function main(): Promise<void> {
       `${observation.priceChangePct >= 0 ? '+' : ''}${observation.priceChangePct.toFixed(1)}% price`,
     );
 
+    // Start outcome tracking before safety so strong candidates rejected by a
+    // transient/on-chain safety check still produce future-performance data.
+    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
+      void outcomeTracker.track(candidate.mint, observation.lastPrice, 300).catch((error: unknown) => {
+        log.warn(
+          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
     const safetyReport = await safety.check(candidate);
     if (!safetyReport.ok) {
       await recorder.record(
@@ -118,23 +131,6 @@ async function main(): Promise<void> {
         `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
       );
       return;
-    }
-
-    // Start outcome tracking only after on-chain safety passes.
-    // Otherwise every strong-but-unsafe candidate remains subscribed for 5 minutes,
-    // creating unnecessary PumpPortal subscription churn and metered traffic.
-    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
-      void outcomeTracker.track(
-        candidate.mint,
-        observation.lastPrice,
-        300,
-      ).catch((error: unknown) => {
-        log.warn(
-          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
     }
 
     const decision = await strategy.evaluate({ candidate, observation });
