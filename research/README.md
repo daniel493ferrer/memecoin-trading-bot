@@ -21,3 +21,27 @@ Data rules:
 - Treat Jun-Jul 2026 as one historical regime, not proof of future performance.
 
 Live trading remains disabled during research.
+
+
+## Ejecutar
+
+Con DuckDB instalado:
+
+```bash
+pip install duckdb
+python research/pumpfun_research.py
+```
+
+El motor consulta directamente los Parquet públicos de Hugging Face; no necesitas descargar los 6.7 GB.
+
+Para inspeccionar primero el esquema real:
+
+```bash
+python research/pumpfun_research.py --describe
+```
+
+Genera:
+- `research/results/early_move_summary.json`
+- `research/results/early_move_features.parquet`
+
+La primera pasada mide, por checkpoint de 5–60 s, la probabilidad histórica de alcanzar +100/+300/+600/+1000% dentro de 1/5/15/60 minutos. Después de esta pasada se construye la validación walk-forward y las reglas de entrada/salida.
