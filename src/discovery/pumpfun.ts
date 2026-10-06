@@ -15,6 +15,7 @@ import type { PumpTradeEvent, TokenCandidate } from '../types.js';
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private watchedMints = new Map<string, number>();
+  private subscribedMints = new Set<string>();
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
@@ -77,10 +78,19 @@ export class PumpFunStream extends EventEmitter {
   private syncTradeSubscriptions(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
 
-    const keys = [...this.watchedMints.keys()];
-    if (keys.length === 0) return;
+    const desired = new Set(this.watchedMints.keys());
+    const removed = [...this.subscribedMints].filter((mint) => !desired.has(mint));
+    const added = [...desired].filter((mint) => !this.subscribedMints.has(mint));
 
-    this.send({ method: 'subscribeTokenTrade', keys });
+    if (removed.length > 0) {
+      this.send({ method: 'unsubscribeTokenTrade', keys: removed });
+      for (const mint of removed) this.subscribedMints.delete(mint);
+    }
+
+    if (added.length > 0) {
+      this.send({ method: 'subscribeTokenTrade', keys: added });
+      for (const mint of added) this.subscribedMints.add(mint);
+    }
   }
 
   private connect(): void {
@@ -103,6 +113,7 @@ export class PumpFunStream extends EventEmitter {
         this.send({ method: 'subscribeMigration' });
       }
 
+      this.subscribedMints.clear();
       this.syncTradeSubscriptions();
     });
 
