@@ -116,7 +116,7 @@ def build_query(
     feature_select = []
     for alias, col in feature_cols.items():
         if col:
-            feature_select.append(f"{ident(col)} AS {alias}")
+            feature_select.append(f"s.{ident(col)} AS {alias}")
         else:
             feature_select.append(f"NULL::DOUBLE AS {alias}")
     feature_sql = ",\n        ".join(feature_select)
