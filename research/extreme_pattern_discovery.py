@@ -197,6 +197,18 @@ def main() -> int:
     print("Inspecting feature schema...")
     feature_cols = discover_numeric(con, features)
     print("Numeric candidate columns:", len(feature_cols))
+    forbidden = [c for c in feature_cols if (
+        "future" in c.lower()
+        or "forward" in c.lower()
+        or "peak" in c.lower()
+        or c.lower().endswith("_at")
+        or c.lower() in LEAKY
+    )]
+    if forbidden:
+        raise SystemExit(
+            "LEAKAGE GUARD FAILED: " + ", ".join(forbidden)
+        )
+    print("Leakage guard: PASS")
 
     token_rows = con.execute(
         "DESCRIBE SELECT * FROM read_parquet(" + qlit(args.tokens_url) + ")"
