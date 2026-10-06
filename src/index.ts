@@ -5,17 +5,19 @@ import { WalletManager } from './wallets.js';
 import { PumpPortalEngine } from './swap/pumpportal.js';
 import { JupiterEngine } from './swap/jupiter.js';
 import { PumpFunStream } from './discovery/pumpfun.js';
+import { FomoStream } from './discovery/fomo.js';
 import { RaydiumListener } from './discovery/raydium.js';
 import { SafetyChecker } from './safety.js';
 import { PositionStore } from './positions.js';
 import { Trader } from './trader.js';
 import { ExitMonitor } from './monitor.js';
 import { CandidateObserver } from './observation.js';
+import { FomoObserver } from './fomo-observation.js';
 import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
 import { CandidateRecorder } from './recorder.js';
 import type { TokenCandidate } from './types.js';
-import { fmtSol, short, sleep } from './utils.js';
+import { short, sleep } from './utils.js';
 
 const BANNER = `
   ┌─────────────────────────────────────────────┐
@@ -24,40 +26,35 @@ const BANNER = `
 
 async function main(): Promise<void> {
   console.log(BANNER);
-
   const { config, env } = loadConfig();
-
   const wallets = new WalletManager(config.wallets);
   wallets.load();
-
   const rpc = new Rpc(env.heliusApiKey);
   const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
   const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
   const safety = new SafetyChecker(rpc, config.filters);
-
   const store = new PositionStore();
   store.load();
-
   const trader = new Trader(rpc, wallets, pumpEngine, jupiterEngine, store, config, env.liveTrading);
 
-  // Migration events stay subscribed regardless of sniping settings: any open
-  // pump.fun position needs them to switch its pricing/execution to the AMM.
   const pumpStream = new PumpFunStream(config.endpoints.pumpPortalWs, {
     newTokens: config.discovery.pumpfun.enabled && config.discovery.pumpfun.snipeNewTokens,
     migrations: true,
     apiKey: env.pumpPortalApiKey,
   });
+  const fomoStream = new FomoStream(config.endpoints.fomoWs, {
+    enabled: config.discovery.fomo.enabled,
+    chain: config.discovery.fomo.chain,
+    minUsd: config.discovery.fomo.minUsd,
+    apiKey: env.fomoApiKey,
+  });
   const raydium = new RaydiumListener(rpc);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
-  const observer = new CandidateObserver(pumpStream, config.observation);
+  const pumpObserver = new CandidateObserver(pumpStream, config.observation);
+  const fomoObserver = new FomoObserver(fomoStream, config.discovery.fomo);
   const strategy = createStrategy(config.strategy.name);
   const recorder = new CandidateRecorder('data/candidates.jsonl');
-  const outcomeTracker = new CandidateOutcomeTracker(
-    pumpStream,
-    'data/outcomes.jsonl',
-  );
-
-  // ------------------------------------------------------------- buy pipeline
+  const outcomeTracker = new CandidateOutcomeTracker(pumpStream, 'data/outcomes.jsonl');
 
   const seenMints = new Set<string>();
   let lastBuyAt = 0;
@@ -65,8 +62,6 @@ async function main(): Promise<void> {
 
   async function onCandidate(candidate: TokenCandidate): Promise<void> {
     if (seenMints.has(candidate.mint)) return;
-
-    // Gate cheap checks first, in order of cost.
     if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
     seenMints.add(candidate.mint);
@@ -75,8 +70,6 @@ async function main(): Promise<void> {
       if (oldest) seenMints.delete(oldest);
     }
 
-    // Start trade capture immediately on discovery so the first seconds are
-    // not lost while the candidate passes cheap filters.
     const earlyTradeWatch = candidate.venue === 'pump';
     if (earlyTradeWatch) pumpStream.watchToken(candidate.mint);
 
@@ -88,112 +81,66 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Observe first. Safety RPC checks are intentionally deferred until the
-    // candidate proves it has enough live activity. This prevents a flood of
-    // seconds-old mint RPC lookups from competing with the trade stream.
-    const observation = await observer.observe(candidate);
+    const observation =
+      candidate.source === 'fomo'
+        ? await fomoObserver.observe(candidate)
+        : await pumpObserver.observe(candidate);
 
     if (!observation.ok) {
       if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `observation rejected: ${observation.reasons.join('; ')}`,
-      );
-
-      log.info(
-        `skip ${candidate.symbol} (${short(candidate.mint)}): observation rejected — ${observation.reasons.join('; ')}`,
-      );
+      await recorder.record(candidate, observation, 'reject',
+        `observation rejected: ${observation.reasons.join('; ')}`);
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): observation rejected — ${observation.reasons.join('; ')}`);
       return;
     }
+
     log.info(
       `${candidate.symbol}: observation passed ${observation.score}/100 — ` +
-      `${observation.trades} trades, ${observation.uniqueBuyers} buyers, ` +
-      `${observation.buyVolumeSol.toFixed(3)} SOL buy volume, ` +
-      `${observation.priceChangePct >= 0 ? '+' : ''}${observation.priceChangePct.toFixed(1)}% price`,
+      `${observation.trades} events, ${observation.uniqueBuyers} buyers, ` +
+      `flow ratio ${Number.isFinite(observation.buySellRatio) ? observation.buySellRatio.toFixed(2) : '∞'}`,
     );
 
-    // Start outcome tracking before safety so strong candidates rejected by a
-    // transient/on-chain safety check still produce future-performance data.
     if (candidate.venue === 'pump' && observation.lastPrice > 0) {
       void outcomeTracker.track(candidate.mint, observation.lastPrice, 300).catch((error: unknown) => {
-        log.warn(
-          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        log.warn(`outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${error instanceof Error ? error.message : String(error)}`);
       });
-      // Transfer the discovery-time watch to the outcome tracker. The
-      // observer has already released its own reference.
       if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
     }
 
     const safetyReport = await safety.check(candidate);
     if (!safetyReport.ok) {
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `safety rejected: ${safetyReport.reasons.join('; ')}`,
-      );
-      log.info(
-        `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
-      );
+      await recorder.record(candidate, observation, 'reject',
+        `safety rejected: ${safetyReport.reasons.join('; ')}`);
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`);
       return;
     }
 
     const decision = await strategy.evaluate({ candidate, observation });
     if (!decision.buy) {
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `strategy ${strategy.name}: ${decision.reason}`,
-      );
-
+      await recorder.record(candidate, observation, 'reject',
+        `strategy ${strategy.name}: ${decision.reason}`);
       log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): strategy ${strategy.name} — ${decision.reason}`);
       return;
     }
 
-    // Multiple candidates may finish observation together. Wait for the current
-    // buy instead of silently discarding a validated opportunity.
-    while (buying) {
-      await sleep(100);
-    }
+    while (buying) await sleep(100);
+    if (store.openCount >= config.entry.maxOpenPositions || store.hasMint(candidate.mint)) return;
 
-    if (store.openCount >= config.entry.maxOpenPositions) return;
-    if (store.hasMint(candidate.mint)) return;
+    const cooldownMs = config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
+    if (lastBuyAt > 0 && cooldownMs > 0) await sleep(cooldownMs);
+    if (store.openCount >= config.entry.maxOpenPositions || store.hasMint(candidate.mint)) return;
 
-    const cooldownMs =
-      config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
-    if (lastBuyAt > 0 && cooldownMs > 0) {
-      await sleep(cooldownMs);
-    }
-
-    // Re-check mutable portfolio gates after waiting for the entry lock/cooldown.
-    if (store.openCount >= config.entry.maxOpenPositions) return;
-    if (store.hasMint(candidate.mint)) return;
-
-    await recorder.record(
-      candidate,
-      observation,
-      'buy',
-      `strategy ${strategy.name}: ${decision.reason}`,
-    );
+    await recorder.record(candidate, observation, 'buy',
+      `strategy ${strategy.name}: ${decision.reason}`);
 
     buying = true;
     try {
-      // Final safety re-check immediately before signing the transaction.
       const report = await safety.check(candidate);
       if (!report.ok) {
         log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${report.reasons.join('; ')}`);
         return;
       }
-
-      log.info(
-        `entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — capital allocation is percentage-based`,
-      );
+      log.info(`entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — capital allocation is percentage-based`);
       const position = await trader.buy(candidate, report.decimals);
       if (position) {
         lastBuyAt = Date.now();
@@ -209,10 +156,10 @@ async function main(): Promise<void> {
   pumpStream.on('newToken', (c: TokenCandidate) => {
     if (config.discovery.pumpfun.snipeNewTokens) void onCandidate(c);
   });
-
+  fomoStream.on('newToken', (c: TokenCandidate) => {
+    if (config.discovery.fomo.enabled) void onCandidate(c);
+  });
   pumpStream.on('migration', (mint: string) => {
-    // Migration sniping: buy tokens that just graduated (proven demand),
-    // unless we already hold them — the monitor handles that case.
     if (!config.discovery.pumpfun.snipeMigrations || store.hasMint(mint)) return;
     void onCandidate({
       mint,
@@ -223,41 +170,33 @@ async function main(): Promise<void> {
       discoveredAt: Date.now(),
     });
   });
-
   raydium.on('newPool', (c: TokenCandidate) => void onCandidate(c));
-
-  // ------------------------------------------------------------------ startup
 
   if (
     config.discovery.pumpfun.enabled ||
+    config.discovery.fomo.enabled ||
     (config.observation.enabled && config.discovery.raydium.enabled) ||
     store.open.some((p) => p.venue === 'pump')
   ) {
     pumpStream.start();
   }
-  if (config.discovery.raydium.enabled) {
-    raydium.start();
-  }
+  if (config.discovery.fomo.enabled) fomoStream.start();
+  if (config.discovery.raydium.enabled) raydium.start();
   monitor.start();
 
   log.ok(
     `bot running — ${wallets.count} wallet(s), reserve ${config.entry.reservePct}%, ` +
-      `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
-      `max ${config.entry.maxOpenPositions} open position(s), ` +
-      `mode ${env.liveTrading ? 'LIVE' : 'DRY-RUN'}`,
+    `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
+    `max ${config.entry.maxOpenPositions} open position(s), ` +
+    `mode ${env.liveTrading ? 'LIVE' : 'DRY-RUN'}`,
   );
 
-  // Periodic status line so long sessions stay legible.
   setInterval(() => {
     const open = store.open;
     if (open.length === 0) return;
-    const summary = open
-      .map((p) => `${p.symbol}@${((Date.now() - p.openedAt) / 1000).toFixed(0)}s`)
-      .join(', ');
+    const summary = open.map((p) => `${p.symbol}@${((Date.now() - p.openedAt) / 1000).toFixed(0)}s`).join(', ');
     log.info(`open positions (${open.length}): ${summary}`);
   }, 60_000);
-
-  // ------------------------------------------------------------- shutdown
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -266,6 +205,7 @@ async function main(): Promise<void> {
     log.info('shutting down — open positions are saved and will resume on restart');
     monitor.stop();
     pumpStream.stop();
+    fomoStream.stop();
     await raydium.stop();
     store.save();
     process.exit(0);
