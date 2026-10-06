@@ -19,11 +19,38 @@ export interface OutcomeResult {
   sellTrades: number;
 }
 
+interface Session {
+  entryPrice: number;
+  startedAt: number;
+  lastPrice: number;
+  peakPrice: number;
+  troughPrice: number;
+  events: PumpTradeEvent[];
+}
+
 export class CandidateOutcomeTracker {
+  private readonly sessions = new Map<string, Session>();
+
   constructor(
     private readonly stream: PumpFunStream,
     private readonly file: string,
-  ) {}
+  ) {
+    // Keep exactly one trade listener on the shared stream. Outcome tracking
+    // can run for many candidates concurrently; adding one EventEmitter
+    // listener per candidate causes MaxListenersExceededWarning and needless
+    // listener churn.
+    this.stream.on('trade', (event: PumpTradeEvent) => {
+      const session = this.sessions.get(event.mint);
+      if (!session || !Number.isFinite(event.price) || event.price <= 0) {
+        return;
+      }
+
+      session.events.push(event);
+      session.lastPrice = event.price;
+      session.peakPrice = Math.max(session.peakPrice, event.price);
+      session.troughPrice = Math.min(session.troughPrice, event.price);
+    });
+  }
 
   async track(
     mint: string,
@@ -34,26 +61,21 @@ export class CandidateOutcomeTracker {
       return null;
     }
 
-    let lastPrice = entryPrice;
-    let peakPrice = entryPrice;
-    let troughPrice = entryPrice;
-    const events: PumpTradeEvent[] = [];
+    if (this.sessions.has(mint)) {
+      return null;
+    }
 
-    const onTrade = (event: PumpTradeEvent): void => {
-      if (event.mint !== mint || !Number.isFinite(event.price) || event.price <= 0) {
-        return;
-      }
-
-      events.push(event);
-      lastPrice = event.price;
-      peakPrice = Math.max(peakPrice, event.price);
-      troughPrice = Math.min(troughPrice, event.price);
+    const session: Session = {
+      entryPrice,
+      startedAt: Date.now(),
+      lastPrice: entryPrice,
+      peakPrice: entryPrice,
+      troughPrice: entryPrice,
+      events: [],
     };
 
+    this.sessions.set(mint, session);
     this.stream.watchToken(mint);
-    this.stream.on('trade', onTrade);
-
-    const startedAt = Date.now();
 
     try {
       await new Promise<void>((resolve) => {
@@ -62,21 +84,22 @@ export class CandidateOutcomeTracker {
 
       const result: OutcomeResult = {
         mint,
-        startedAt,
+        startedAt: session.startedAt,
         durationSeconds,
-        entryPrice,
-        lastPrice,
-        peakPrice,
-        troughPrice,
-        maxGainPct: ((peakPrice / entryPrice) - 1) * 100,
+        entryPrice: session.entryPrice,
+        lastPrice: session.lastPrice,
+        peakPrice: session.peakPrice,
+        troughPrice: session.troughPrice,
+        maxGainPct: ((session.peakPrice / session.entryPrice) - 1) * 100,
         maxDrawdownPct:
-          peakPrice > 0
-            ? ((troughPrice / peakPrice) - 1) * 100
+          session.peakPrice > 0
+            ? ((session.troughPrice / session.peakPrice) - 1) * 100
             : 0,
-        finalChangePct: ((lastPrice / entryPrice) - 1) * 100,
-        trades: events.length,
-        buyTrades: events.filter((e) => e.txType === 'buy').length,
-        sellTrades: events.filter((e) => e.txType === 'sell').length,
+        finalChangePct:
+          ((session.lastPrice / session.entryPrice) - 1) * 100,
+        trades: session.events.length,
+        buyTrades: session.events.filter((e) => e.txType === 'buy').length,
+        sellTrades: session.events.filter((e) => e.txType === 'sell').length,
       };
 
       await mkdir(dirname(this.file), { recursive: true });
@@ -92,7 +115,7 @@ export class CandidateOutcomeTracker {
 
       return result;
     } finally {
-      this.stream.off('trade', onTrade);
+      this.sessions.delete(mint);
       this.stream.unwatchToken(mint);
     }
   }
