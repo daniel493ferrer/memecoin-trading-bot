@@ -39,7 +39,7 @@
     "evaluationIntervalMs": 500
   },
   "strategy": {
-    "name": "momentum"
+    "name": "early-quality"
   },
   "entry": {
     "reservePct": 20,
