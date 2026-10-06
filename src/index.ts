@@ -86,21 +86,6 @@ async function main(): Promise<void> {
     // seconds-old mint RPC lookups from competing with the trade stream.
     const observation = await observer.observe(candidate);
 
-    // The current outcome recorder is fed by the pump.fun trade stream.
-    // Do not create fake zero-trade outcomes for Raydium candidates.
-    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
-      void outcomeTracker.track(
-        candidate.mint,
-        observation.lastPrice,
-        300,
-      ).catch((error: unknown) => {
-        log.warn(
-          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-    }
     if (!observation.ok) {
       await recorder.record(
         candidate,
@@ -133,6 +118,23 @@ async function main(): Promise<void> {
         `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
       );
       return;
+    }
+
+    // Start outcome tracking only after on-chain safety passes.
+    // Otherwise every strong-but-unsafe candidate remains subscribed for 5 minutes,
+    // creating unnecessary PumpPortal subscription churn and metered traffic.
+    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
+      void outcomeTracker.track(
+        candidate.mint,
+        observation.lastPrice,
+        300,
+      ).catch((error: unknown) => {
+        log.warn(
+          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     }
 
     const decision = await strategy.evaluate({ candidate, observation });
