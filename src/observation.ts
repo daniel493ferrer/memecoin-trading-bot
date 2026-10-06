@@ -3,6 +3,24 @@ import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { PumpTradeEvent, TokenCandidate } from './types.js';
 import { sleep } from './utils.js';
 
+export interface ObservationCheckpoint {
+  elapsedSeconds: number;
+  score: number;
+  trades: number;
+  uniqueBuyers: number;
+  buyVolumeSol: number;
+  sellVolumeSol: number;
+  buySellRatio: number;
+  largestBuyerPct: number;
+  priceChangePct: number;
+  recentPriceChangePct: number;
+  recentBuyPressurePct: number;
+  tradeRate: number;
+  buyAcceleration: number;
+  volumeAcceleration: number;
+  healthy: boolean;
+}
+
 export interface ObservationReport {
   ok: boolean;
   reasons: string[];
@@ -29,10 +47,14 @@ export interface ObservationReport {
   tradeRate: number;
   buyAcceleration: number;
   volumeAcceleration: number;
+  observationSeconds: number;
+  developmentStatus: 'early' | 'developing' | 'qualified' | 'expired';
+  checkpoints: ObservationCheckpoint[];
 }
 
 interface Session {
   events: PumpTradeEvent[];
+  checkpoints: ObservationCheckpoint[];
 }
 
 export class CandidateObserver {
@@ -75,7 +97,7 @@ export class CandidateObserver {
       return this.emptyReport(false, ['observation capacity reached']);
     }
 
-    const session: Session = { events: [] };
+    const session: Session = { events: [], checkpoints: [] };
     this.sessions.set(candidate.mint, session);
     this.stream.watchToken(candidate.mint);
 
@@ -83,23 +105,60 @@ export class CandidateObserver {
     const minDurationMs = this.config.minObservationSeconds * 1_000;
     const maxDurationMs = this.config.durationSeconds * 1_000;
     const intervalMs = this.config.evaluationIntervalMs;
+    const checkpoints = [...this.config.checkpointsSeconds]
+      .filter((seconds) => seconds >= this.config.minObservationSeconds)
+      .sort((a, b) => a - b);
 
     try {
-      while (Date.now() - startedAt < maxDurationMs) {
-        const elapsed = Date.now() - startedAt;
+      let nextCheckpoint = 0;
 
-        if (elapsed >= minDurationMs) {
-          const report = this.evaluate(session.events, elapsed / 1_000);
+      while (Date.now() - startedAt < maxDurationMs) {
+        const elapsedSeconds = (Date.now() - startedAt) / 1_000;
+        const elapsedMs = elapsedSeconds * 1_000;
+
+        if (
+          nextCheckpoint < checkpoints.length &&
+          elapsedSeconds >= checkpoints[nextCheckpoint]
+        ) {
+          const report = this.evaluate(session.events, elapsedSeconds);
+          const checkpoint = this.toCheckpoint(report);
+          session.checkpoints.push(checkpoint);
+          nextCheckpoint += 1;
 
           if (this.isEarlyEntrySignal(report)) {
-            return report;
+            return this.withHistory(report, session);
+          }
+
+          // A clearly deteriorating candidate is not allowed to consume the
+          // whole development window.
+          if (this.shouldAbortDevelopment(session.checkpoints)) {
+            return this.withHistory(
+              this.withStatus(report, 'expired', ['development deteriorated']),
+              session,
+            );
           }
         }
 
-        await sleep(intervalMs);
+        if (elapsedMs >= maxDurationMs) break;
+        await sleep(Math.min(intervalMs, Math.max(50, maxDurationMs - elapsedMs)));
       }
 
-      return this.evaluate(session.events, (Date.now() - startedAt) / 1_000);
+      const report = this.evaluate(session.events, (Date.now() - startedAt) / 1_000);
+      if (
+        session.checkpoints.length === 0 ||
+        session.checkpoints.at(-1)?.elapsedSeconds !== report.observationSeconds
+      ) {
+        session.checkpoints.push(this.toCheckpoint(report));
+      }
+
+      return this.withHistory(
+        this.withStatus(
+          report,
+          report.ok ? 'qualified' : 'expired',
+          report.ok ? [] : ['development window ended without qualification'],
+        ),
+        session,
+      );
     } finally {
       this.sessions.delete(candidate.mint);
       this.stream.unwatchToken(candidate.mint);
@@ -118,6 +177,61 @@ export class CandidateObserver {
       report.recentBuyPressurePct >= 55 &&
       report.buyAcceleration >= 1 &&
       report.volumeAcceleration >= 1
+    );
+  }
+
+  private toCheckpoint(report: ObservationReport): ObservationCheckpoint {
+    return {
+      elapsedSeconds: report.observationSeconds,
+      score: report.score,
+      trades: report.trades,
+      uniqueBuyers: report.uniqueBuyers,
+      buyVolumeSol: report.buyVolumeSol,
+      sellVolumeSol: report.sellVolumeSol,
+      buySellRatio: report.buySellRatio,
+      largestBuyerPct: report.largestBuyerPct,
+      priceChangePct: report.priceChangePct,
+      recentPriceChangePct: report.recentPriceChangePct,
+      recentBuyPressurePct: report.recentBuyPressurePct,
+      tradeRate: report.tradeRate,
+      buyAcceleration: report.buyAcceleration,
+      volumeAcceleration: report.volumeAcceleration,
+      healthy: report.ok || report.score >= this.config.minScore * 0.85,
+    };
+  }
+
+  private withHistory(
+    report: ObservationReport,
+    session: Session,
+  ): ObservationReport {
+    return {
+      ...report,
+      developmentStatus: report.ok ? 'qualified' : 'developing',
+      checkpoints: [...session.checkpoints],
+    };
+  }
+
+  private withStatus(
+    report: ObservationReport,
+    status: ObservationReport['developmentStatus'],
+    extraReasons: string[],
+  ): ObservationReport {
+    return {
+      ...report,
+      developmentStatus: status,
+      reasons: [...report.reasons, ...extraReasons],
+    };
+  }
+
+  private shouldAbortDevelopment(checkpoints: ObservationCheckpoint[]): boolean {
+    if (checkpoints.length < 2) return false;
+    const current = checkpoints.at(-1)!;
+    const previous = checkpoints.at(-2)!;
+    return (
+      !current.healthy &&
+      current.score + 10 < previous.score &&
+      current.recentBuyPressurePct < previous.recentBuyPressurePct &&
+      current.buyVolumeSol <= previous.buyVolumeSol
     );
   }
 
@@ -440,6 +554,9 @@ export class CandidateObserver {
       tradeRate: 0,
       buyAcceleration: 0,
       volumeAcceleration: 0,
+      observationSeconds: 0,
+      developmentStatus: 'expired',
+      checkpoints: [],
     };
   }
 }
