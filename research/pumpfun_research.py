@@ -112,8 +112,17 @@ def build_query(
     price_col: str,
     feature_cols: dict[str, str | None],
 ) -> str:
-    # The current corpus exposes bucket_seconds as elapsed seconds from launch.
-    # Keep the engine schema-driven so older aliases still work if the corpus evolves.
+    """
+    Build a bounded early-life query.
+
+    The previous implementation cross-joined every snapshot row with seven
+    checkpoints and materialized the full result in Python. On the full corpus
+    that can explode into hundreds of millions of intermediate rows.
+
+    The live corpus exposes bucket_seconds as elapsed time from launch. We only
+    need rows through checkpoint + maximum forward horizon (60 + 3600 = 3660s),
+    and the corpus has checkpoint buckets matching the requested seconds.
+    """
     feature_select = []
     for alias, col in feature_cols.items():
         if col:
@@ -121,8 +130,10 @@ def build_query(
         else:
             feature_select.append(f"NULL::DOUBLE AS {alias}")
 
-    feature_sql = ",\n            ".join(feature_select)
+    feature_sql = ",\n        ".join(feature_select)
     checkpoint_values = ",".join(str(x) for x in CHECKPOINTS)
+    max_time = max(CHECKPOINTS) + max(FORWARD_WINDOWS)
+
     forward_select = []
     for seconds in FORWARD_WINDOWS:
         forward_select.append(
@@ -132,7 +143,7 @@ def build_query(
                 RANGE BETWEEN CURRENT ROW AND {seconds} FOLLOWING
             ) AS future_max_{seconds}s"""
         )
-    forward_sql = ",\n            ".join(forward_select)
+    forward_sql = ",\n        ".join(forward_select)
 
     return f"""
 WITH raw AS (
@@ -142,6 +153,7 @@ WITH raw AS (
         TRY_CAST({ident(price_col)} AS DOUBLE) AS price,
         {feature_sql}
     FROM read_parquet('{remote("snapshots.parquet")}')
+    WHERE {ident(time_col)} BETWEEN 0 AND {max_time}
 ),
 clean AS (
     SELECT *
@@ -157,22 +169,12 @@ with_future AS (
         {forward_sql}
     FROM clean
 ),
-ranked AS (
+picked AS (
     SELECT
         *,
-        checkpoint AS checkpoint_s,
-        ROW_NUMBER() OVER (
-            PARTITION BY mint, checkpoint
-            ORDER BY ABS(t - checkpoint), t
-        ) AS rn
+        CAST(t AS BIGINT) AS checkpoint_s
     FROM with_future
-    CROSS JOIN (SELECT UNNEST([{checkpoint_values}]) AS checkpoint)
-    WHERE t >= 0
-),
-picked AS (
-    SELECT *
-    FROM ranked
-    WHERE rn = 1
+    WHERE t IN ({checkpoint_values})
 )
 SELECT
     mint,
@@ -192,31 +194,6 @@ FROM picked
 """
 
 
-def summarize(rows: list[tuple], columns_: list[str]) -> dict:
-    idx = {c: i for i, c in enumerate(columns_)}
-    out: dict[str, object] = {"rows": len(rows), "checkpoints": {}}
-
-    for cp in CHECKPOINTS:
-        subset = [r for r in rows if r[idx["checkpoint_s"]] == cp]
-        item: dict[str, object] = {"samples": len(subset)}
-        for horizon in FORWARD_WINDOWS:
-            key = f"forward_max_pct_{horizon}s"
-            vals = [
-                float(r[idx[key]])
-                for r in subset
-                if finite(r[idx[key]])
-            ]
-            item[f"hit_{horizon}s"] = {}
-            for target in (100, 300, 600, 1000):
-                hits = sum(v >= target for v in vals)
-                item[f"hit_{horizon}s"][f"+{target}%"] = (
-                    round(hits / len(vals) * 100, 4) if vals else None
-                )
-        out["checkpoints"][str(cp)] = item
-
-    return out
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="research/results")
@@ -224,7 +201,11 @@ def main() -> int:
     args = parser.parse_args()
 
     con = duckdb.connect()
-    con.execute("SET enable_progress_bar=false")
+    con.execute("SET enable_progress_bar=true")
+    # Allow DuckDB to spill intermediate state instead of letting the OS kill
+    # the process when the local machine has limited RAM.
+    con.execute("SET memory_limit='2GB'")
+    con.execute("SET temp_directory='research/results/.duckdb_tmp'")
 
     if args.describe:
         describe(con)
@@ -237,7 +218,7 @@ def main() -> int:
 
     print("Dataset:", DATASET)
     print("Snapshot columns:", len(snapshot_cols))
-    print("Using live corpus schema: bucket_seconds / price_close when available")
+    print("Using bounded early-life scan: 0-3660s")
     print("mint:", mint)
     print("time:", time_col)
     print("price:", price_col)
@@ -260,28 +241,58 @@ def main() -> int:
         print(f"  {k}: {v}")
 
     query = build_query(mint, time_col, price_col, feature_cols)
-    result = con.execute(query)
-    rows = result.fetchall()
-    result_columns = [d[0] for d in result.description]
-
-    summary = summarize(rows, result_columns)
-    summary["dataset"] = DATASET
-    summary["checkpoints_seconds"] = CHECKPOINTS
-    summary["forward_windows_seconds"] = FORWARD_WINDOWS
-    summary["targets_pct"] = [100, 300, 600, 1000]
-    summary["note"] = (
-        "Exploratory full-corpus snapshot analysis. "
-        "It is not yet an OOS trading validation and must not be used as "
-        "evidence of profitability by itself."
-    )
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Aggregate in DuckDB; do not fetch millions of rows into Python.
+    summary_query = f"""
+    WITH data AS ({query})
+    SELECT
+        checkpoint_s,
+        COUNT(*) AS samples,
+        {", ".join(
+            f"SUM(CASE WHEN forward_max_pct_{h}s >= {target} THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0) AS hit_{h}s_{target}"
+            for h in FORWARD_WINDOWS
+            for target in (100, 300, 600, 1000)
+        )}
+    FROM data
+    GROUP BY checkpoint_s
+    ORDER BY checkpoint_s
+    """
+    summary_rows = con.execute(summary_query).fetchall()
+    summary_columns = [d[0] for d in con.description]
+
+    summary: dict[str, object] = {
+        "dataset": DATASET,
+        "checkpoints_seconds": CHECKPOINTS,
+        "forward_windows_seconds": FORWARD_WINDOWS,
+        "targets_pct": [100, 300, 600, 1000],
+        "checkpoints": {},
+        "note": (
+            "Exploratory full-corpus early-life snapshot analysis. "
+            "This is not OOS trading validation or profitability evidence."
+        ),
+    }
+
+    for row in summary_rows:
+        values = dict(zip(summary_columns, row))
+        cp = str(int(values["checkpoint_s"]))
+        item: dict[str, object] = {"samples": int(values["samples"])}
+        for h in FORWARD_WINDOWS:
+            item[f"hit_{h}s"] = {
+                f"+{target}%": round(float(values[f"hit_{h}s_{target}"]), 4)
+                if values[f"hit_{h}s_{target}"] is not None
+                else None
+                for target in (100, 300, 600, 1000)
+            }
+        summary["checkpoints"][cp] = item
+
     (out_dir / "early_move_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
 
-    # Compact row-level sample for reproducibility/debugging.
+    print("Writing row-level research features...")
     con.execute(
         "COPY (" + query + ") TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
         [str(out_dir / "early_move_features.parquet")],
