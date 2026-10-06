@@ -102,7 +102,6 @@ export class CandidateObserver {
     this.stream.watchToken(candidate.mint);
 
     const startedAt = Date.now();
-    const minDurationMs = this.config.minObservationSeconds * 1_000;
     const maxDurationMs = this.config.durationSeconds * 1_000;
     const intervalMs = this.config.evaluationIntervalMs;
     const checkpoints = [...this.config.checkpointsSeconds]
@@ -472,6 +471,9 @@ export class CandidateObserver {
       tradeRate,
       buyAcceleration,
       volumeAcceleration,
+      observationSeconds: elapsedSeconds,
+      developmentStatus: 'developing',
+      checkpoints: [],
     };
   }
 
