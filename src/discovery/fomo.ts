@@ -15,6 +15,8 @@ export class FomoStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
+  private latest = new Map<string, FomoAlert>();
+  private seen = new Set<string>();
 
   constructor(
     private readonly wsUrl: string,
@@ -33,6 +35,10 @@ export class FomoStream extends EventEmitter {
     this.stopped = true;
     this.ws?.close();
     this.ws = null;
+  }
+
+  latestAlert(mint: string): FomoAlert | undefined {
+    return this.latest.get(mint);
   }
 
   private connect(): void {
@@ -87,10 +93,16 @@ export class FomoStream extends EventEmitter {
     const symbol = String(msg.token ?? '?');
     const usdValue = Number(msg.usdValue ?? 0);
     const trader = String(msg.trader ?? '');
+    const eventId = String(msg.eventId ?? '');
     if (!mint || !trader || !Number.isFinite(usdValue) || usdValue <= 0) return;
+    if (eventId && this.seen.has(eventId)) return;
+    if (eventId) {
+      this.seen.add(eventId);
+      if (this.seen.size > 20_000) this.seen.clear();
+    }
 
     const alert: FomoAlert = {
-      eventId: String(msg.eventId ?? ''),
+      eventId,
       alertType,
       trader,
       token: symbol,
@@ -100,18 +112,18 @@ export class FomoStream extends EventEmitter {
       timestamp: Number(msg.ts ?? Date.now()),
     };
 
+    this.latest.set(mint, alert);
     this.emit('alert', alert);
 
     if (alertType === 'buy') {
-      const candidate: TokenCandidate = {
+      this.emit('newToken', {
         mint,
         symbol,
         name: symbol,
         source: 'fomo',
         venue: 'amm',
         discoveredAt: Date.now(),
-      };
-      this.emit('newToken', candidate);
+      } satisfies TokenCandidate);
     }
   }
 }
