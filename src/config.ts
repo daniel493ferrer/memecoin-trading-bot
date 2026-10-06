@@ -148,10 +148,10 @@ export function loadConfig(): { config: BotConfig; env: Env } {
     throw new Error('LIVE_TRADING must be true or false.');
   }
 
-  const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim();
-  if (!pumpPortalApiKey) {
+  const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim() ?? '';
+  if (parsed.data.discovery.pumpfun.enabled && !pumpPortalApiKey) {
     throw new Error(
-      'PUMPPORTAL_API_KEY is missing. PumpPortal subscribeTokenTrade requires an API key for live trade observation.',
+      'PUMPPORTAL_API_KEY is missing while discovery.pumpfun.enabled=true.',
     );
   }
 
