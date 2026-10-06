@@ -50,7 +50,32 @@ export interface CandidateRecord {
 export class CandidateRecorder {
   constructor(private readonly file: string) {}
 
-  async record(
+  async recordPrefilterReject(
+    candidate: TokenCandidate,
+    reason: string,
+  ): Promise<void> {
+    const timestamp = Date.now();
+    const record = {
+      timestamp,
+      mint: candidate.mint,
+      symbol: candidate.symbol,
+      name: candidate.name,
+      source: candidate.source,
+      venue: candidate.venue,
+      discoveredAt: candidate.discoveredAt,
+      devBuySol: candidate.devBuySol ?? 0,
+      initialLiquiditySol: candidate.initialLiquiditySol ?? 0,
+      observationSeconds: 0,
+      developmentStatus: 'expired' as const,
+      observationOk: false,
+      score: 0,
+      reasons: [reason],
+      decision: 'reject' as const,
+      decisionReason: reason,
+    };
+    await mkdir(dirname(this.file), { recursive: true });
+    await appendFile(this.file, JSON.stringify(record) + '\\n', 'utf8');
+  }\n\n  async record(
     candidate: TokenCandidate,
     observation: ObservationReport,
     decision: 'buy' | 'reject',
