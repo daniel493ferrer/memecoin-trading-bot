@@ -174,8 +174,6 @@ async function main(): Promise<void> {
 
   if (
     config.discovery.pumpfun.enabled ||
-    config.discovery.fomo.enabled ||
-    (config.observation.enabled && config.discovery.raydium.enabled) ||
     store.open.some((p) => p.venue === 'pump')
   ) {
     pumpStream.start();
