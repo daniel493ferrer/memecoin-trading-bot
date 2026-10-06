@@ -284,13 +284,11 @@ export class CandidateObserver {
         ? ((lastPrice / firstPrice) - 1) * 100
         : 0;
 
-    const midpoint =
-      events.length > 1
-        ? Math.floor(events.length / 2)
-        : events.length;
-
-    const firstHalf = events.slice(0, midpoint);
-    const secondHalf = events.slice(midpoint);
+    const firstTimestamp = events[0]?.timestamp ?? Date.now();
+    const halfWindowMs = Math.max(500, elapsedSeconds * 500);
+    const recentCutoff = firstTimestamp + halfWindowMs;
+    const firstHalf = events.filter((event) => event.timestamp < recentCutoff);
+    const secondHalf = events.filter((event) => event.timestamp >= recentCutoff);
 
     const firstBuys = firstHalf.filter((e) => e.txType === 'buy');
     const secondBuys = secondHalf.filter((e) => e.txType === 'buy');
