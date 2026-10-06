@@ -172,7 +172,16 @@ export class PumpFunStream extends EventEmitter {
     }
 
     if (msg.message && !msg.txType) {
-      log.warn('pump.fun stream message: ' + String(msg.message));
+      const message = String(msg.message);
+      // PumpPortal uses normal websocket acknowledgements for successful
+      // subscription changes. They are not warnings and should not flood logs.
+      if (
+        message.startsWith('Successfully subscribed') ||
+        message === 'Unsubscribed.'
+      ) {
+        return;
+      }
+      log.warn('pump.fun stream message: ' + message);
       return;
     }
 
