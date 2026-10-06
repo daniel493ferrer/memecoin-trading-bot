@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""
+Pump.fun early-life research engine.
+
+Runs locally against the public Slinky21/Pumpfun_Memecoin_Corpus parquet files.
+No dataset download is required: DuckDB can scan the public parquet URLs directly.
+
+Primary objective:
+  determine whether 5/10/15/20/30/45/60s observations contain enough
+  information to predict large forward moves (+100/+300/+600/+1000%).
+
+This is research only. It does not alter live trading configuration.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+from typing import Iterable
+
+import duckdb
+
+DATASET = "Slinky21/Pumpfun_Memecoin_Corpus"
+BASE_URL = f"https://huggingface.co/datasets/{DATASET}/resolve/main"
+
+CHECKPOINTS = (5, 10, 15, 20, 30, 45, 60)
+FORWARD_WINDOWS = (60, 300, 900, 3600)
+
+# The corpus has changed schema during development. Keep detection explicit
+# instead of silently assuming column names.
+TIME_ALIASES = (
+    "seconds_since_launch",
+    "seconds_from_launch",
+    "elapsed_seconds",
+    "seconds",
+)
+PRICE_ALIASES = ("price_sol", "price", "market_price_sol", "mcap_price_sol")
+MINT_ALIASES = ("mint",)
+BUY_PRESSURE_ALIASES = ("buy_pressure", "buy_pressure_pct", "buy_ratio")
+TRADE_RATE_ALIASES = ("trade_velocity", "trade_rate", "trades_per_second")
+CURVE_ALIASES = ("curve_pct_depleted_eob", "curve_pct_depleted")
+BUY_VOL_ALIASES = ("buy_volume_sol", "buy_vol_sol", "volume_buy_sol")
+SELL_VOL_ALIASES = ("sell_volume_sol", "sell_vol_sol", "volume_sell_sol")
+TRADES_ALIASES = ("trade_count", "trades", "trades_eob", "num_trades")
+
+
+def ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def remote(name: str) -> str:
+    return f"{BASE_URL}/{name}"
+
+
+def columns(con: duckdb.DuckDBPyConnection, file_name: str) -> list[str]:
+    rows = con.execute(
+        "SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet(?))",
+        [remote(file_name)],
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def choose(cols: Iterable[str], aliases: Iterable[str]) -> str | None:
+    lower = {c.lower(): c for c in cols}
+    for alias in aliases:
+        if alias.lower() in lower:
+            return lower[alias.lower()]
+    return None
+
+
+def require(name: str, value: str | None) -> str:
+    if value is None:
+        raise RuntimeError(
+            f"Required snapshot column not found for {name}. "
+            f"Run this script once with --describe to inspect the live schema."
+        )
+    return value
+
+
+def finite(x: object) -> bool:
+    try:
+        return math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def describe(con: duckdb.DuckDBPyConnection) -> None:
+    for file_name in ("snapshots.parquet", "tokens.parquet", "postgard_outcomes.parquet"):
+        print(f"\n=== {file_name} ===")
+        rows = con.execute(
+            "SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet(?))",
+            [remote(file_name)],
+        ).fetchall()
+        for name, typ in rows:
+            print(f"{name}\t{typ}")
+
+
+def build_query(
+    mint: str,
+    time_col: str,
+    price_col: str,
+    feature_cols: dict[str, str | None],
+) -> str:
+    # A single scan creates the time-normalized feature rows and all forward
+    # maximum labels. RANGE is in seconds because t is cast to DOUBLE.
+    feature_select = []
+    for alias, col in feature_cols.items():
+        if col:
+            feature_select.append(f"{ident(col)} AS {alias}")
+        else:
+            feature_select.append(f"NULL::DOUBLE AS {alias}")
+
+    feature_sql = ",\n            ".join(feature_select)
+    checkpoint_values = ",".join(str(x) for x in CHECKPOINTS)
+    forward_select = []
+    for seconds in FORWARD_WINDOWS:
+        forward_select.append(
+            f"""MAX(price) OVER (
+                PARTITION BY mint
+                ORDER BY t
+                RANGE BETWEEN CURRENT ROW AND {seconds} FOLLOWING
+            ) AS future_max_{seconds}s"""
+        )
+    forward_sql = ",\n            ".join(forward_select)
+
+    return f"""
+WITH raw AS (
+    SELECT
+        {ident(mint)} AS mint,
+        TRY_CAST({ident(time_col)} AS DOUBLE) AS t,
+        TRY_CAST({ident(price_col)} AS DOUBLE) AS price,
+        {feature_sql}
+    FROM read_parquet('{remote("snapshots.parquet")}')
+),
+clean AS (
+    SELECT *
+    FROM raw
+    WHERE mint IS NOT NULL
+      AND t IS NOT NULL
+      AND price IS NOT NULL
+      AND price > 0
+),
+with_future AS (
+    SELECT
+        *,
+        {forward_sql}
+    FROM clean
+),
+ranked AS (
+    SELECT
+        *,
+        checkpoint AS checkpoint_s,
+        ROW_NUMBER() OVER (
+            PARTITION BY mint, checkpoint
+            ORDER BY ABS(t - checkpoint), t
+        ) AS rn
+    FROM with_future
+    CROSS JOIN (SELECT UNNEST([{checkpoint_values}]) AS checkpoint)
+    WHERE t >= 0
+),
+picked AS (
+    SELECT *
+    FROM ranked
+    WHERE rn = 1
+)
+SELECT
+    mint,
+    checkpoint_s,
+    t,
+    price,
+    {", ".join(feature_cols.keys())},
+    future_max_60s,
+    future_max_300s,
+    future_max_900s,
+    future_max_3600s,
+    100.0 * (future_max_60s / price - 1.0) AS forward_max_pct_60s,
+    100.0 * (future_max_300s / price - 1.0) AS forward_max_pct_300s,
+    100.0 * (future_max_900s / price - 1.0) AS forward_max_pct_900s,
+    100.0 * (future_max_3600s / price - 1.0) AS forward_max_pct_3600s
+FROM picked
+"""
+
+
+def summarize(rows: list[tuple], columns_: list[str]) -> dict:
+    idx = {c: i for i, c in enumerate(columns_)}
+    out: dict[str, object] = {"rows": len(rows), "checkpoints": {}}
+
+    for cp in CHECKPOINTS:
+        subset = [r for r in rows if r[idx["checkpoint_s"]] == cp]
+        item: dict[str, object] = {"samples": len(subset)}
+        for horizon in FORWARD_WINDOWS:
+            key = f"forward_max_pct_{horizon}s"
+            vals = [
+                float(r[idx[key]])
+                for r in subset
+                if finite(r[idx[key]])
+            ]
+            item[f"hit_{horizon}s"] = {}
+            for target in (100, 300, 600, 1000):
+                hits = sum(v >= target for v in vals)
+                item[f"hit_{horizon}s"][f"+{target}%"] = (
+                    round(hits / len(vals) * 100, 4) if vals else None
+                )
+        out["checkpoints"][str(cp)] = item
+
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", default="research/results")
+    parser.add_argument("--describe", action="store_true")
+    args = parser.parse_args()
+
+    con = duckdb.connect()
+    con.execute("SET enable_progress_bar=false")
+
+    if args.describe:
+        describe(con)
+        return 0
+
+    snapshot_cols = columns(con, "snapshots.parquet")
+    mint = choose(snapshot_cols, MINT_ALIASES)
+    time_col = choose(snapshot_cols, TIME_ALIASES)
+    price_col = choose(snapshot_cols, PRICE_ALIASES)
+
+    print("Dataset:", DATASET)
+    print("Snapshot columns:", len(snapshot_cols))
+    print("mint:", mint)
+    print("time:", time_col)
+    print("price:", price_col)
+
+    require("mint", mint)
+    require("time", time_col)
+    require("price", price_col)
+
+    feature_cols = {
+        "buy_pressure": choose(snapshot_cols, BUY_PRESSURE_ALIASES),
+        "trade_rate": choose(snapshot_cols, TRADE_RATE_ALIASES),
+        "curve_pct": choose(snapshot_cols, CURVE_ALIASES),
+        "buy_volume_sol": choose(snapshot_cols, BUY_VOL_ALIASES),
+        "sell_volume_sol": choose(snapshot_cols, SELL_VOL_ALIASES),
+        "trade_count": choose(snapshot_cols, TRADES_ALIASES),
+    }
+
+    print("Features:")
+    for k, v in feature_cols.items():
+        print(f"  {k}: {v}")
+
+    query = build_query(mint, time_col, price_col, feature_cols)
+    result = con.execute(query)
+    rows = result.fetchall()
+    result_columns = [d[0] for d in result.description]
+
+    summary = summarize(rows, result_columns)
+    summary["dataset"] = DATASET
+    summary["checkpoints_seconds"] = CHECKPOINTS
+    summary["forward_windows_seconds"] = FORWARD_WINDOWS
+    summary["targets_pct"] = [100, 300, 600, 1000]
+    summary["note"] = (
+        "Exploratory full-corpus snapshot analysis. "
+        "It is not yet an OOS trading validation and must not be used as "
+        "evidence of profitability by itself."
+    )
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "early_move_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+
+    # Compact row-level sample for reproducibility/debugging.
+    con.execute(
+        "COPY (" + query + ") TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
+        [str(out_dir / "early_move_features.parquet")],
+    )
+
+    print(json.dumps(summary, indent=2))
+    print(f"\nWrote: {out_dir / 'early_move_summary.json'}")
+    print(f"Wrote: {out_dir / 'early_move_features.parquet'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
