@@ -14,6 +14,8 @@ import { CandidateObserver } from './observation.js';
 import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
 import { CandidateRecorder } from './recorder.js';
+import { PaperAccount } from './paper.js';
+import type { ObservationReport } from './observation.js';
 import type { TokenCandidate } from './types.js';
 import { fmtSol, short, sleep } from './utils.js';
 
@@ -26,19 +28,20 @@ async function main(): Promise<void> {
   console.log(BANNER);
 
   const { config, env } = loadConfig();
+  const live = env.liveTrading;
 
+  // Paper mode never signs anything, so it does not need private keys.
   const wallets = new WalletManager(config.wallets);
-  wallets.load();
+  if (live) wallets.load();
 
   const rpc = new Rpc(env.heliusApiKey);
   const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
   const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
   const safety = new SafetyChecker(rpc, config.filters);
 
-  const store = new PositionStore();
+  // Paper positions live in their own file so they never mix with real ones.
+  const store = new PositionStore(live ? 'positions.json' : 'paper-positions.json');
   store.load();
-
-  const trader = new Trader(rpc, wallets, pumpEngine, jupiterEngine, store, config, env.liveTrading);
 
   // Migration events stay subscribed regardless of sniping settings: any open
   // pump.fun position needs them to switch its pricing/execution to the AMM.
@@ -47,6 +50,17 @@ async function main(): Promise<void> {
     migrations: true,
     apiKey: env.pumpPortalApiKey,
   });
+
+  const paperAccount = live ? null : new PaperAccount(config.paper.startingBalanceSol);
+  const trader = new Trader(
+    rpc,
+    wallets,
+    pumpEngine,
+    jupiterEngine,
+    store,
+    config,
+    paperAccount ? { account: paperAccount, stream: pumpStream } : null,
+  );
   const raydium = new RaydiumListener(rpc);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
   const observer = new CandidateObserver(pumpStream, config.observation);
@@ -55,6 +69,7 @@ async function main(): Promise<void> {
   const outcomeTracker = new CandidateOutcomeTracker(
     pumpStream,
     'data/outcomes.jsonl',
+    config.recording.maxConcurrentOutcomes,
   );
 
   // ------------------------------------------------------------- buy pipeline
@@ -63,11 +78,32 @@ async function main(): Promise<void> {
   let lastBuyAt = 0;
   let buying = false;
 
+  /** Follow the candidate's price after the decision, for later research. */
+  function trackOutcome(
+    candidate: TokenCandidate,
+    observation: ObservationReport,
+    decision: 'buy' | 'reject',
+    reason: string,
+  ): void {
+    if (candidate.venue !== 'pump' || observation.lastPrice <= 0) return;
+    void outcomeTracker
+      .track(candidate.mint, observation.lastPrice, config.recording.outcomeSeconds, {
+        symbol: candidate.symbol,
+        decision,
+        reason,
+        score: observation.score,
+      })
+      .catch((error: unknown) => {
+        log.warn(
+          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+  }
+
   async function onCandidate(candidate: TokenCandidate): Promise<void> {
     if (seenMints.has(candidate.mint)) return;
-
-    // Gate cheap checks first, in order of cost.
-    if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
     seenMints.add(candidate.mint);
     if (seenMints.size > 10_000) {
@@ -76,35 +112,41 @@ async function main(): Promise<void> {
     }
 
     // Start trade capture immediately on discovery so the first seconds are
-    // not lost while the candidate passes cheap filters.
+    // not lost while the candidate passes cheap filters. Every later consumer
+    // (observer, outcome tracker, exit monitor) holds its own reference, so
+    // this one is always released when the pipeline returns.
     const earlyTradeWatch = candidate.venue === 'pump';
     if (earlyTradeWatch) pumpStream.watchToken(candidate.mint);
+    try {
+      await evaluateCandidate(candidate);
+    } catch (err) {
+      log.error(`candidate pipeline error for ${candidate.symbol}: ${(err as Error).message}`);
+    } finally {
+      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
+    }
+  }
 
+  async function evaluateCandidate(candidate: TokenCandidate): Promise<void> {
     const rejected = safety.prefilter(candidate);
     if (rejected) {
-      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
       await recorder.recordPrefilterReject(candidate, `prefilter rejected: ${rejected}`);
       log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
       return;
     }
 
     // Observe first. Safety RPC checks are intentionally deferred until the
-    // candidate proves it has enough live activity. This prevents a flood of
-    // seconds-old mint RPC lookups from competing with the trade stream.
+    // candidate proves it has enough live activity and the strategy wants it.
     const observation = await observer.observe(candidate);
 
     if (!observation.ok) {
-      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `observation rejected: ${observation.reasons.join('; ')}`,
-      );
-
-      log.info(
-        `skip ${candidate.symbol} (${short(candidate.mint)}): observation rejected — ${observation.reasons.join('; ')}`,
-      );
+      const reason = `observation rejected: ${observation.reasons.join('; ')}`;
+      await recorder.record(candidate, observation, 'reject', reason);
+      // A sample of rejects is followed too; without it there is no way to
+      // tell whether the filters throw away winners.
+      if (Math.random() < config.recording.rejectedOutcomeSampleRate) {
+        trackOutcome(candidate, observation, 'reject', reason);
+      }
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
       return;
     }
     log.info(
@@ -114,45 +156,12 @@ async function main(): Promise<void> {
       `${observation.priceChangePct >= 0 ? '+' : ''}${observation.priceChangePct.toFixed(1)}% price`,
     );
 
-    // Start outcome tracking before safety so strong candidates rejected by a
-    // transient/on-chain safety check still produce future-performance data.
-    if (candidate.venue === 'pump' && observation.lastPrice > 0) {
-      void outcomeTracker.track(candidate.mint, observation.lastPrice, 300).catch((error: unknown) => {
-        log.warn(
-          `outcome tracking failed for ${candidate.symbol} (${short(candidate.mint)}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-      // Transfer the discovery-time watch to the outcome tracker. The
-      // observer has already released its own reference.
-      if (earlyTradeWatch) pumpStream.unwatchToken(candidate.mint);
-    }
-
-    const safetyReport = await safety.check(candidate);
-    if (!safetyReport.ok) {
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `safety rejected: ${safetyReport.reasons.join('; ')}`,
-      );
-      log.info(
-        `skip ${candidate.symbol} (${short(candidate.mint)}): ${safetyReport.reasons.join('; ')}`,
-      );
-      return;
-    }
-
     const decision = await strategy.evaluate({ candidate, observation });
     if (!decision.buy) {
-      await recorder.record(
-        candidate,
-        observation,
-        'reject',
-        `strategy ${strategy.name}: ${decision.reason}`,
-      );
-
-      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): strategy ${strategy.name} — ${decision.reason}`);
+      const reason = `strategy ${strategy.name}: ${decision.reason}`;
+      await recorder.record(candidate, observation, 'reject', reason);
+      trackOutcome(candidate, observation, 'reject', reason);
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
       return;
     }
 
@@ -161,46 +170,43 @@ async function main(): Promise<void> {
     while (buying) {
       await sleep(100);
     }
-
-    if (store.openCount >= config.entry.maxOpenPositions) return;
-    if (store.hasMint(candidate.mint)) return;
-
-    const cooldownMs =
-      config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
-    if (lastBuyAt > 0 && cooldownMs > 0) {
-      await sleep(cooldownMs);
-    }
-
-    // Re-check mutable portfolio gates after waiting for the entry lock/cooldown.
-    if (store.openCount >= config.entry.maxOpenPositions) return;
-    if (store.hasMint(candidate.mint)) return;
-
-    await recorder.record(
-      candidate,
-      observation,
-      'buy',
-      `strategy ${strategy.name}: ${decision.reason}`,
-    );
-
     buying = true;
     try {
-      // Final safety re-check immediately before signing the transaction.
+      if (store.openCount >= config.entry.maxOpenPositions) {
+        const reason = `max open positions (${config.entry.maxOpenPositions}) reached`;
+        await recorder.record(candidate, observation, 'reject', reason);
+        trackOutcome(candidate, observation, 'reject', reason);
+        log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
+        return;
+      }
+      if (store.hasMint(candidate.mint)) return;
+
+      const cooldownMs =
+        config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
+      if (lastBuyAt > 0 && cooldownMs > 0) {
+        await sleep(cooldownMs);
+      }
+
+      // On-chain safety runs once, immediately before the order.
       const report = await safety.check(candidate);
       if (!report.ok) {
-        log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${report.reasons.join('; ')}`);
+        const reason = `safety rejected: ${report.reasons.join('; ')}`;
+        await recorder.record(candidate, observation, 'reject', reason);
+        trackOutcome(candidate, observation, 'reject', reason);
+        log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
         return;
       }
 
-      log.info(
-        `entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — capital allocation is percentage-based`,
-      );
+      const reason = `strategy ${strategy.name}: ${decision.reason}`;
+      await recorder.record(candidate, observation, 'buy', reason);
+      trackOutcome(candidate, observation, 'buy', reason);
+
+      log.info(`entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source}`);
       const position = await trader.buy(candidate, report.decimals);
       if (position) {
         lastBuyAt = Date.now();
         monitor.track(position);
       }
-    } catch (err) {
-      log.error(`candidate pipeline error for ${candidate.symbol}: ${(err as Error).message}`);
     } finally {
       buying = false;
     }
@@ -241,10 +247,10 @@ async function main(): Promise<void> {
   monitor.start();
 
   log.ok(
-    `bot running — ${wallets.count} wallet(s), reserve ${config.entry.reservePct}%, ` +
+    `bot running — ${live ? `${wallets.count} wallet(s)` : `paper balance ${fmtSol(paperAccount!.balanceSol)}`}, reserve ${config.entry.reservePct}%, ` +
       `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
       `max ${config.entry.maxOpenPositions} open position(s), ` +
-      `mode ${env.liveTrading ? 'LIVE' : 'DRY-RUN'}`,
+      `mode ${live ? 'LIVE' : 'PAPER (simulated fills, no transactions sent)'}`,
   );
 
   // Periodic status line so long sessions stay legible.

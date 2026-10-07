@@ -10,7 +10,7 @@ const TakeProfitSchema = z.object({
   sellPct: z.number().gt(0).max(100),
 });
 
-const ConfigSchema = z.object({
+export const ConfigSchema = z.object({
   discovery: z.object({
     pumpfun: z.object({
       enabled: z.boolean(),
@@ -79,6 +79,22 @@ const ConfigSchema = z.object({
     rotation: z.enum(['round-robin', 'random']),
     minSolReserve: z.number().min(0),
   }),
+  /** Dry-run (LIVE_TRADING=false) simulation settings. */
+  paper: z.object({
+    startingBalanceSol: z.number().gt(0).default(1),
+    /** Venue fee charged on each simulated fill (pump.fun bonding curve ≈ 1.25%). */
+    feePct: z.number().min(0).max(10).default(1.25),
+    /** Extra adverse price movement applied to every fill to model latency. */
+    extraSlippagePct: z.number().min(0).max(50).default(3),
+  }).default({}),
+  /** What the bot records for later research. */
+  recording: z.object({
+    /** How long to follow a candidate's price after its decision. */
+    outcomeSeconds: z.number().int().min(10).default(300),
+    /** Fraction of observation-rejected candidates whose outcome is also tracked. */
+    rejectedOutcomeSampleRate: z.number().min(0).max(1).default(0.25),
+    maxConcurrentOutcomes: z.number().int().min(1).default(150),
+  }).default({}),
   endpoints: z.object({
     jupiterBase: z.string().url(),
     pumpPortalWs: z.string().url(),

@@ -4,6 +4,8 @@ wallets.json
 
 # runtime state
 positions.json
+paper-positions.json
+paper-state.json
 logs/
 data/
 

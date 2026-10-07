@@ -99,7 +99,7 @@ export class CandidateRecorder {
       decisionReason: reason,
     };
     await mkdir(dirname(this.file), { recursive: true });
-    await appendFile(this.file, JSON.stringify(record) + '\\n', 'utf8');
+    await appendFile(this.file, JSON.stringify(record) + '\n', 'utf8');
   }
 
   async record(

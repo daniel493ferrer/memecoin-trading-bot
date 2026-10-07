@@ -43,10 +43,10 @@
   },
   "entry": {
     "reservePct": 20,
-    "positionPctOfOperatingCapital": 100,
+    "positionPctOfOperatingCapital": 10,
     "slippageBps": 2000,
     "priorityFeeSol": 0.0007,
-    "maxOpenPositions": 1,
+    "maxOpenPositions": 3,
     "buyCooldownSeconds": 15,
     "routeTimeoutSeconds": 45
   },
@@ -58,10 +58,20 @@
       "activateAtMultiple": 1.5,
       "trailPct": 20
     },
-    "maxHoldSeconds": 0,
+    "maxHoldSeconds": 1800,
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 3500
+  },
+  "paper": {
+    "startingBalanceSol": 1,
+    "feePct": 1.25,
+    "extraSlippagePct": 3
+  },
+  "recording": {
+    "outcomeSeconds": 300,
+    "rejectedOutcomeSampleRate": 0.25,
+    "maxConcurrentOutcomes": 150
   },
   "wallets": {
     "file": "wallets.json",

@@ -3,7 +3,7 @@ import type { PositionStore } from './positions.js';
 import type { Trader } from './trader.js';
 import type { JupiterEngine } from './swap/jupiter.js';
 import type { PumpFunStream } from './discovery/pumpfun.js';
-import type { Position, PumpTradeEvent } from './types.js';
+import type { ExitReason, Position, PumpTradeEvent } from './types.js';
 import { log } from './logger.js';
 import { fmtPct, rawToUi, short } from './utils.js';
 
@@ -11,9 +11,8 @@ import { fmtPct, rawToUi, short } from './utils.js';
 const MAX_PRICE_FAILURES = 5;
 
 /**
- * Watches every open position and keeps the position open through the move.
- * Exits are emergency protection plus peak-drawdown deterioration, with no
- * fixed profit-taking ladder.
+ * Watches every open position and applies the exit rules in priority order:
+ * stop loss, trailing stop, then the optional take-profit ladder.
  *
  * Pricing:
  *  - pump venue: pushed in real time from bonding-curve trade events
@@ -178,12 +177,36 @@ export class ExitMonitor {
       }
     }
 
-    // No fixed take-profit: the whole position stays intact while the move
-    // remains healthy. The trailing stop is the primary deterioration exit.
+    // 3. Take-profit ladder: partial sells of the remaining position. An empty
+    //    ladder keeps the whole position on for the trailing stop.
+    for (const [i, rung] of exit.takeProfits.entries()) {
+      if (position.takeProfitsFilled.includes(i) || multiple < rung.multiple) continue;
+      log.info(`${position.symbol}: take-profit ${rung.multiple}x hit — selling ${rung.sellPct}%`);
+      await this.partialExit(position, i, rung.sellPct);
+      return;
+    }
+  }
+
+  /** Sell part of a position for take-profit rung `rungIndex`. */
+  private async partialExit(position: Position, rungIndex: number, pct: number): Promise<void> {
+    if (this.selling.has(position.id)) return;
+    this.selling.add(position.id);
+    try {
+      const sold = await this.trader.sell(position, pct, 'take-profit');
+      if (sold && position.status === 'open') {
+        position.takeProfitsFilled.push(rungIndex);
+        this.store.update(position);
+      }
+      if (position.status !== 'open' && position.venue === 'pump') {
+        this.pumpStream.unwatchToken(position.mint);
+      }
+    } finally {
+      this.selling.delete(position.id);
+    }
   }
 
   /** Full exit — sells 100% and closes the position. */
-  private async exit(position: Position, reason: Parameters<Trader['sell']>[2]): Promise<void> {
+  private async exit(position: Position, reason: ExitReason): Promise<void> {
     if (this.selling.has(position.id)) return;
     this.selling.add(position.id);
     try {

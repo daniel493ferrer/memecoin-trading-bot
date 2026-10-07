@@ -4,8 +4,6 @@ import { z } from 'zod';
 import type { Position } from './types.js';
 import { log } from './logger.js';
 
-const STORE_FILE = path.resolve('positions.json');
-
 const PositionSchema = z.object({
   id: z.string().min(1),
   mint: z.string().min(1),
@@ -39,27 +37,32 @@ const PositionSchema = z.object({
  */
 export class PositionStore {
   private positions = new Map<string, Position>();
+  private readonly file: string;
+
+  constructor(file = 'positions.json') {
+    this.file = path.resolve(file);
+  }
 
   load(): void {
-    if (!fs.existsSync(STORE_FILE)) return;
+    if (!fs.existsSync(this.file)) return;
     try {
-      const raw = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) as unknown;
+      const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) as unknown;
       const parsed = z.array(PositionSchema).parse(raw) as Position[];
       for (const p of parsed) {
         if (p.status === 'open') this.positions.set(p.id, p);
       }
       if (this.positions.size > 0) {
-        log.info(`restored ${this.positions.size} open position(s) from positions.json`);
+        log.info(`restored ${this.positions.size} open position(s) from ${path.basename(this.file)}`);
       }
     } catch (err) {
-      throw new Error(`could not safely restore positions.json: ${(err as Error).message}`);
+      throw new Error(`could not safely restore ${path.basename(this.file)}: ${(err as Error).message}`);
     }
   }
 
   save(): void {
-    const tmp = `${STORE_FILE}.tmp`;
+    const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify([...this.positions.values()], null, 2));
-    fs.renameSync(tmp, STORE_FILE);
+    fs.renameSync(tmp, this.file);
   }
 
   add(position: Position): void {

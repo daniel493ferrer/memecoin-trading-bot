@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "report": "tsx src/report.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test"
   },
   "keywords": [
     "solana",

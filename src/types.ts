@@ -72,6 +72,10 @@ export interface PumpTradeEvent {
   tokenAmount: number;
   /** SOL per token derived from the bonding curve reserves after this trade. */
   price: number;
+  /** Virtual SOL reserves of the bonding curve after this trade. */
+  vSol: number;
+  /** Virtual token reserves (UI units) of the bonding curve after this trade. */
+  vTokens: number;
   /** Local observation timestamp when the stream received the trade. */
   timestamp: number;
 }

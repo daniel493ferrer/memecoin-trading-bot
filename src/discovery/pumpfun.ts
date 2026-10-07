@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import { log } from '../logger.js';
 import { short, sleep } from '../utils.js';
 import type { PumpTradeEvent, TokenCandidate } from '../types.js';
+import type { CurveState } from '../paper.js';
 
 /**
  * Real-time pump.fun feed via the PumpPortal data websocket.
@@ -16,6 +17,8 @@ export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private watchedMints = new Map<string, number>();
   private subscribedMints = new Set<string>();
+  /** Latest bonding-curve reserves per watched mint — used for paper fills. */
+  private curves = new Map<string, CurveState>();
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
@@ -53,10 +56,21 @@ export class PumpFunStream extends EventEmitter {
     if (refs === 0) this.scheduleTradeSync();
   }
 
+  /** Latest known bonding-curve reserves for a watched mint, if any trade was seen. */
+  getCurve(mint: string): CurveState | undefined {
+    return this.curves.get(mint);
+  }
+
+  /** Seed curve reserves from a creation event so the first fill has a price. */
+  private setCurve(mint: string, vSol: number, vTokens: number): void {
+    if (vSol > 0 && vTokens > 0) this.curves.set(mint, { vSol, vTokens, updatedAt: Date.now() });
+  }
+
   unwatchToken(mint: string): void {
     const refs = this.watchedMints.get(mint) ?? 0;
     if (refs <= 1) {
       this.watchedMints.delete(mint);
+      this.curves.delete(mint);
     } else {
       this.watchedMints.set(mint, refs - 1);
     }
@@ -162,6 +176,15 @@ export class PumpFunStream extends EventEmitter {
       };
 
       this.emit('newToken', candidate);
+      // Listeners subscribe synchronously; only keep reserves for mints
+      // someone is watching so unwatched launches cannot grow the map.
+      if (this.watchedMints.has(msg.mint)) {
+        this.setCurve(
+          msg.mint,
+          Number(msg.vSolInBondingCurve ?? 0),
+          Number(msg.vTokensInBondingCurve ?? 0),
+        );
+      }
       return;
     }
 
@@ -193,6 +216,7 @@ export class PumpFunStream extends EventEmitter {
       const vTokens = Number(msg.vTokensInBondingCurve ?? 0);
 
       if (vSol > 0 && vTokens > 0) {
+        this.setCurve(msg.mint, vSol, vTokens);
         const event: PumpTradeEvent = {
           mint: msg.mint,
           txType: msg.txType,
@@ -200,6 +224,8 @@ export class PumpFunStream extends EventEmitter {
           solAmount: Number(msg.solAmount ?? 0),
           tokenAmount: Number(msg.tokenAmount ?? 0),
           price: vSol / vTokens,
+          vSol,
+          vTokens,
           timestamp: Date.now(),
         };
 

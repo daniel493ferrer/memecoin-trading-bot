@@ -3,7 +3,15 @@ import { dirname } from 'node:path';
 import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { PumpTradeEvent } from './types.js';
 
-export interface OutcomeResult {
+/** Decision context stored next to each outcome so results can be grouped. */
+export interface OutcomeMeta {
+  symbol: string;
+  decision: 'buy' | 'reject';
+  reason: string;
+  score: number;
+}
+
+export interface OutcomeResult extends OutcomeMeta {
   mint: string;
   startedAt: number;
   durationSeconds: number;
@@ -34,6 +42,7 @@ export class CandidateOutcomeTracker {
   constructor(
     private readonly stream: PumpFunStream,
     private readonly file: string,
+    private readonly maxConcurrent = 150,
   ) {
     // Keep exactly one trade listener on the shared stream. Outcome tracking
     // can run for many candidates concurrently; adding one EventEmitter
@@ -56,12 +65,13 @@ export class CandidateOutcomeTracker {
     mint: string,
     entryPrice: number,
     durationSeconds: number,
+    meta: OutcomeMeta,
   ): Promise<OutcomeResult | null> {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
       return null;
     }
 
-    if (this.sessions.has(mint)) {
+    if (this.sessions.has(mint) || this.sessions.size >= this.maxConcurrent) {
       return null;
     }
 
@@ -84,6 +94,7 @@ export class CandidateOutcomeTracker {
 
       const result: OutcomeResult = {
         mint,
+        ...meta,
         startedAt: session.startedAt,
         durationSeconds,
         entryPrice: session.entryPrice,

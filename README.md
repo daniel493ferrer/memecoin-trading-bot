@@ -63,23 +63,39 @@ metrics are written to the console so strategy behavior can be audited.
 - Persistent positions that resume management after restart
 - Re-broadcasting of signed transactions until confirmation
 - Structured trade history in `logs/trades.jsonl`
+- **Paper trading** (default): simulated fills on the real bonding curve with
+  fees and latency slippage, a virtual balance, and the same exit management
+- Candidate and post-decision outcome recording for research (`npm run report`)
 
 ## Quick start
 
 Requires Node.js 20 or newer.
 
 ```bash
-git clone https://github.com/slightlyuseless/memecoin-trading-bot.git
+git clone https://github.com/daniel493ferrer/memecoin-trading-bot.git
 cd memecoin-trading-bot
 npm install
 
 cp .env.example .env
-# Add your Helius API key to .env
+# Add your Helius and PumpPortal API keys to .env (LIVE_TRADING stays false)
 
+npm start          # paper trading: real market data, simulated fills
+npm run report     # what was recorded and how the paper trades went
+```
+
+With `LIVE_TRADING=false` (the default) the bot runs the full pipeline against
+live market data but never signs a transaction. Buys and sells are simulated
+against the latest bonding-curve reserves (or a Jupiter quote for AMM tokens),
+charging `paper.feePct`, `paper.extraSlippagePct` and network fees, and booked
+to a virtual balance in `paper-state.json`. Paper positions are stored in
+`paper-positions.json` and paper trades in `logs/paper-trades.jsonl`. Delete
+those files to restart the paper account.
+
+Live trading needs private keys and `LIVE_TRADING=true`:
+
+```bash
 cp wallets.example.json wallets.json
 # Add one or more base58 private keys to wallets.json
-
-npm start
 ```
 
 Wallet files may contain private-key strings:
@@ -224,7 +240,8 @@ All runtime tuning is validated from `config.json` before the bot starts.
 
 | Key | Purpose |
 |---|---|
-| `buyAmountSol` | SOL committed to each position |
+| `reservePct` | Share of the wallet balance never used for positions |
+| `positionPctOfOperatingCapital` | Position size as a share of the balance left after the reserve |
 | `slippageBps` | Maximum entry and exit slippage in basis points |
 | `priorityFeeSol` | Transaction priority-fee budget |
 | `maxOpenPositions` | Portfolio-wide concurrent position limit |
@@ -242,6 +259,27 @@ All runtime tuning is validated from `config.json` before the bot starts.
 | `exitOnDevSell` | Exit when the recorded pump.fun creator sells |
 | `sellOnMigration` | Exit at migration instead of moving management to Jupiter |
 | `priceCheckIntervalMs` | AMM price-monitoring interval |
+
+### `paper`
+
+| Key | Purpose |
+|---|---|
+| `startingBalanceSol` | Virtual balance of a fresh paper account |
+| `feePct` | Venue fee charged on each simulated fill |
+| `extraSlippagePct` | Extra adverse movement per fill, modelling latency against other bots |
+
+### `recording`
+
+| Key | Purpose |
+|---|---|
+| `outcomeSeconds` | How long a candidate's price is followed after the decision |
+| `rejectedOutcomeSampleRate` | Share of observation-rejected candidates also followed |
+| `maxConcurrentOutcomes` | Upper bound on simultaneously followed candidates |
+
+Every candidate is written to `data/candidates.jsonl` with its observation
+metrics and decision; followed candidates are written to `data/outcomes.jsonl`
+with their maximum gain, drawdown and final change. Comparing outcomes of bought
+and rejected candidates is how filters and strategies should be judged.
 
 ### `wallets` and `endpoints`
 
@@ -261,6 +299,10 @@ are appended to `logs/trades.jsonl`.
 ```text
 src/
   index.ts                 application orchestration and candidate pipeline
+  paper.ts                 bonding-curve fill math and virtual paper balance
+  recorder.ts              candidate decision log (data/candidates.jsonl)
+  outcomes.ts              post-decision price tracking (data/outcomes.jsonl)
+  report.ts                summary of recorded data and trades
   config.ts                validated configuration loading
   observation.ts           candidate activity collection and scoring
   safety.ts                local and on-chain entry checks
@@ -286,6 +328,7 @@ src/
 
 ```bash
 npm run typecheck
+npm test
 ```
 
 ## Third-party services

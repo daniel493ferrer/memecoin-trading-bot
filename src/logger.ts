@@ -11,8 +11,7 @@ const COLORS = {
   magenta: '\x1b[35m',
 } as const;
 
-const LOG_DIR = path.resolve('logs');
-const TRADE_LOG = path.join(LOG_DIR, 'trades.jsonl');
+const LOG_DIR = 'logs';
 
 function ts(): string {
   return new Date().toISOString().slice(11, 23);
@@ -30,11 +29,16 @@ export const log = {
   trade: (msg: string) => line(COLORS.magenta, 'TRADE', msg),
 };
 
-/** Append a structured trade record to logs/trades.jsonl for later analysis. */
+/**
+ * Append a structured trade record for later analysis. Paper fills go to
+ * logs/paper-trades.jsonl so they never mix with real trades.
+ */
 export function recordTrade(record: Record<string, unknown>): void {
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    fs.appendFileSync(TRADE_LOG, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n');
+    const dir = path.resolve(LOG_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, record.mode === 'paper' ? 'paper-trades.jsonl' : 'trades.jsonl');
+    fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n');
   } catch (err) {
     log.warn(`failed to write trade log: ${(err as Error).message}`);
   }
