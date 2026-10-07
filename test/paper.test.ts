@@ -172,3 +172,14 @@ test('unfunded PumpPortal key is reported instead of silently observing nothing'
   feed(stream, { message: "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL." });
   assert.equal(denied.length, 1);
 });
+
+test('pump.fun launches skip the RPC mint check and use 6 decimals', async () => {
+  const { SafetyChecker } = await import('../src/safety.js');
+  const config = makeConfig();
+  const safety = new SafetyChecker(new Rpc('test-key'), config.filters);
+  const report = await safety.check({
+    mint: 'MintCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', symbol: 'X', name: 'X',
+    source: 'pumpfun', venue: 'pump', discoveredAt: 0,
+  });
+  assert.deepEqual(report, { ok: true, reasons: [], decimals: 6 });
+});

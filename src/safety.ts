@@ -4,6 +4,8 @@ import type { Rpc } from './rpc.js';
 import type { SafetyReport, TokenCandidate } from './types.js';
 import { sleep } from './utils.js';
 
+const PUMP_FUN_DECIMALS = 6;
+
 interface ParsedMintInfo {
   decimals: number;
   mintAuthority: string | null;
@@ -22,6 +24,14 @@ export class SafetyChecker {
   ) {}
 
   async check(candidate: TokenCandidate): Promise<SafetyReport> {
+    // Tokens created through the pump.fun program always have their mint and
+    // freeze authority revoked and use 6 decimals; the program enforces it.
+    // Re-checking over RPC only adds seconds of entry latency and a point of
+    // failure while the account is still propagating.
+    if (candidate.source === 'pumpfun' && candidate.venue === 'pump') {
+      return { ok: true, reasons: [], decimals: PUMP_FUN_DECIMALS };
+    }
+
     const reasons: string[] = [];
     let mintPk: PublicKey;
 
@@ -35,14 +45,15 @@ export class SafetyChecker {
       };
     }
 
-    const parsed = await this.fetchMintInfo(mintPk);
-    if (!parsed) {
+    const fetched = await this.fetchMintInfo(mintPk);
+    if ('error' in fetched) {
       return {
         ok: false,
-        reasons: ['mint account unavailable after RPC retries'],
+        reasons: [`mint account unavailable after RPC retries (${fetched.error})`],
         decimals: 0,
       };
     }
+    const parsed = fetched.info;
 
     if (this.filters.requireMintAuthorityRevoked && parsed.mintAuthority) {
       reasons.push('mint authority not revoked (supply can be inflated)');
@@ -73,8 +84,10 @@ export class SafetyChecker {
     return { ok: reasons.length === 0, reasons, decimals: parsed.decimals };
   }
 
-  private async fetchMintInfo(mintPk: PublicKey): Promise<ParsedMintInfo | null> {
-    let lastError: unknown = null;
+  private async fetchMintInfo(
+    mintPk: PublicKey,
+  ): Promise<{ info: ParsedMintInfo } | { error: string }> {
+    let lastError = 'account not found';
 
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
@@ -85,22 +98,20 @@ export class SafetyChecker {
         const data = info.value?.data;
 
         if (data && 'parsed' in data) {
-          return data.parsed.info as ParsedMintInfo;
+          return { info: data.parsed.info as ParsedMintInfo };
         }
-
+        lastError = info.value ? 'account is not a parsed token mint' : 'account not found';
         // The account may not have propagated yet. Keep polling.
       } catch (error: unknown) {
-        lastError = error;
+        // Surface the RPC failure (bad API key, rate limit, network) so it
+        // can be fixed instead of looking like a token problem.
+        lastError = (error instanceof Error ? error.message : String(error)).slice(0, 160);
       }
 
       if (attempt < 7) await sleep(750);
     }
 
-    // Do not expose RPC implementation details to the strategy layer, but
-    // distinguish an unavailable RPC response from a valid non-mint account.
-    // A null result is conservatively rejected by the caller.
-    void lastError;
-    return null;
+    return { error: lastError };
   }
 
   /** Cheap, purely-local filters. Runs before any RPC is spent on a candidate. */

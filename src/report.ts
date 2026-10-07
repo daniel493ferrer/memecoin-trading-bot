@@ -36,6 +36,7 @@ const bucket = (reason: string) => reason.split(';')[0].replace(/[-+]?\d+(\.\d+)
 interface CandidateRow { decision: 'buy' | 'reject'; decisionReason: string }
 interface OutcomeRow {
   decision?: 'buy' | 'reject';
+  reason?: string;
   maxGainPct: number;
   maxDrawdownPct: number;
   finalChangePct: number;
@@ -77,6 +78,24 @@ for (const decision of ['buy', 'reject'] as const) {
     `median final ${num(median(rows.map((o) => o.finalChangePct)))}%  ` +
     `median drawdown ${num(median(rows.map((o) => o.maxDrawdownPct)))}%`,
   );
+}
+
+// Grouped by why the bot passed: "safety rejected" and "max open positions"
+// rows are candidates the strategy wanted, so they show what buys would do.
+const byReason = new Map<string, number[]>();
+for (const o of outcomes) {
+  if (!o.reason) continue;
+  const key = `${o.decision}: ${bucket(o.reason)}`;
+  byReason.set(key, [...(byReason.get(key) ?? []), o.maxGainPct]);
+}
+if (byReason.size > 0) {
+  console.log('by reason (n, median max gain, hit +100%):');
+  for (const [reason, gains] of [...byReason].sort((a, b) => b[1].length - a[1].length).slice(0, 12)) {
+    console.log(
+      `  ${String(gains.length).padStart(5)}  ${num(median(gains)).padStart(7)}%  ` +
+      `${pct(gains.filter((g) => g >= 100).length, gains.length).padStart(6)}  ${reason}`,
+    );
+  }
 }
 
 for (const [label, file] of [['Paper trades', 'logs/paper-trades.jsonl'], ['Live trades', 'logs/trades.jsonl']]) {
