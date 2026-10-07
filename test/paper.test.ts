@@ -163,3 +163,12 @@ test('dev sell closes a paper position immediately', async () => {
     process.chdir(cwd);
   }
 });
+
+test('unfunded PumpPortal key is reported instead of silently observing nothing', () => {
+  const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+  const denied: string[] = [];
+  stream.on('tradeAccessDenied', (m: string) => denied.push(m));
+  feed(stream, { message: "Subscribed to 'migration' events." });
+  feed(stream, { message: "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL." });
+  assert.equal(denied.length, 1);
+});

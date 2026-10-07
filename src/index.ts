@@ -230,6 +230,16 @@ async function main(): Promise<void> {
     });
   });
 
+  pumpStream.once('tradeAccessDenied', (message: string) => {
+    log.error(`PumpPortal refused per-token trade data: ${message}`);
+    log.error(
+      'Without trade data every candidate is observed with 0 trades and rejected. ' +
+      'Deposit at least 0.02 SOL to the wallet linked to your PUMPPORTAL_API_KEY ' +
+      '(shown when the key was generated at pumpportal.fun), then restart.',
+    );
+    void shutdown();
+  });
+
   raydium.on('newPool', (c: TokenCandidate) => void onCandidate(c));
 
   // ------------------------------------------------------------------ startup

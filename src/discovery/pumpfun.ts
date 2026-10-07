@@ -12,6 +12,7 @@ import type { CurveState } from '../paper.js';
  *   'newToken'  (candidate: TokenCandidate)
  *   'migration' (mint: string)
  *   'trade'     (event: PumpTradeEvent)
+ *   'tradeAccessDenied' (message: string) — the API key cannot stream trades
  */
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -200,8 +201,15 @@ export class PumpFunStream extends EventEmitter {
       // subscription changes. They are not warnings and should not flood logs.
       if (
         message.startsWith('Successfully subscribed') ||
+        message.startsWith('Subscribed to') ||
         message === 'Unsubscribed.'
       ) {
+        return;
+      }
+      // Without per-token trades every observation sees zero activity and
+      // rejects everything. That is a setup problem, not market data.
+      if (message.includes('only available when connecting with an API key funded')) {
+        this.emit('tradeAccessDenied', message);
         return;
       }
       log.warn('pump.fun stream message: ' + message);
