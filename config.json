@@ -12,18 +12,18 @@
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
-    "minLiquidityUsd": 30000,
-    "minAgeMinutes": 60,
+    "minLiquidityUsd": 20000,
+    "minAgeMinutes": 20,
     "maxAgeHours": 0,
     "maxMarketCapUsd": 20000000,
-    "minPriceChange1hPct": 40,
-    "minVolume1hUsd": 100000,
-    "minPriceChange5mPct": 5,
-    "maxPriceChange5mPct": 40,
-    "minVolume5mUsd": 15000,
+    "minPriceChange1hPct": 20,
+    "minVolume1hUsd": 50000,
+    "minPriceChange5mPct": 3,
+    "maxPriceChange5mPct": 60,
+    "minVolume5mUsd": 8000,
     "requireVolumeAcceleration": true,
-    "minBuys5m": 50,
-    "minBuySellRatio5m": 1.3
+    "minBuys5m": 30,
+    "minBuySellRatio5m": 1.2
   },
   "filters": {
     "symbolBlacklist": [

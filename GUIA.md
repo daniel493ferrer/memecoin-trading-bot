@@ -8,13 +8,13 @@ fuerte ahora mismo**, lo compra y lo vende cuando cae un **20 % desde su
 máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
 
 **Compra un token solo si TODO se cumple** (tendencia confirmada, no pico):
-- tiene **1 hora de vida o más** (la mayoría muere en su primera hora),
-- **$30 000+ de liquidez** y capitalización menor de $20M (espacio para crecer),
-- subió **+40 % o más en la última hora** con **$100 000+ de volumen** en esa hora,
-- **sigue subiendo ahora**: entre **+5 % y +40 % en 5 min** (más de +40 % es un pico:
+- tiene **20 minutos de vida o más** (la mayoría muere al nacer),
+- **$20 000+ de liquidez** y capitalización menor de $20M (espacio para crecer),
+- subió **+20 % o más en la última hora** con **$50 000+ de volumen** en esa hora,
+- **sigue subiendo ahora**: entre **+3 % y +60 % en 5 min** (más de +60 % es un pico:
   comprarlo es comprar el techo, y los datos dicen que eso pierde),
 - el volumen de los últimos 5 min va **por encima del ritmo de la hora** (el interés
-  acelera, no se apaga), con **50+ compras** y **1.3 compras por venta**,
+  acelera, no se apaga), con **30+ compras** y **1.2 compras por venta**,
 - pasa la seguridad: nadie puede crear más tokens ni congelarlos, y los 10 mayores
   dueños no tienen más del 30 %.
 
