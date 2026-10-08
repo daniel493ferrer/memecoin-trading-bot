@@ -47,10 +47,12 @@ async function main(): Promise<void> {
   try {
     await rpc.connection.getSlot();
   } catch (err) {
+    const message = (err as Error).message.slice(0, 120);
     throw new Error(
-      `Helius rejected the RPC request (${(err as Error).message.slice(0, 120)}). ` +
-      'HELIUS_API_KEY in .env is wrong: copy the API key from dashboard.helius.dev ' +
-      '(no quotes or spaces) and restart.',
+      /401|403|unauthorized|invalid api key/i.test(message)
+        ? `Helius rejected the RPC request (${message}). HELIUS_API_KEY in .env is wrong: ` +
+          'copy the API key from dashboard.helius.dev (no quotes or spaces) and restart.'
+        : `cannot reach Helius (${message}). Check the internet connection and restart.`,
     );
   }
 
