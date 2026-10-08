@@ -1,10 +1,12 @@
 import { defaultStrategy } from './default/index.js';
 import { momentumStrategy } from './momentum/index.js';
+import { breakoutStrategy } from './breakout/index.js';
 import type { TradingStrategy } from './types.js';
 
 const strategies = new Map<string, TradingStrategy>([
   [defaultStrategy.name, defaultStrategy],
   [momentumStrategy.name, momentumStrategy],
+  [breakoutStrategy.name, breakoutStrategy],
 ]);
 
 /**

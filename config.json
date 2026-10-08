@@ -27,7 +27,14 @@
     "enabled": true,
     "durationSeconds": 60,
     "minObservationSeconds": 5,
-    "checkpointsSeconds": [5, 10, 20, 30, 45, 60],
+    "checkpointsSeconds": [
+      5,
+      10,
+      20,
+      30,
+      45,
+      60
+    ],
     "maxConcurrentCandidates": 15,
     "minTrades": 5,
     "minUniqueBuyers": 3,
@@ -35,11 +42,11 @@
     "minBuySellRatio": 1.5,
     "maxSingleBuyerPct": 60,
     "minPriceChangePct": 0,
-    "minScore": 70,
+    "minScore": 60,
     "evaluationIntervalMs": 500
   },
   "strategy": {
-    "name": "momentum"
+    "name": "breakout"
   },
   "entry": {
     "reservePct": 20,
@@ -52,14 +59,19 @@
     "routeTimeoutSeconds": 45
   },
   "exit": {
-    "takeProfits": [],
-    "stopLossPct": 30,
+    "takeProfits": [
+      {
+        "multiple": 1.5,
+        "sellPct": 100
+      }
+    ],
+    "stopLossPct": 20,
     "trailingStop": {
       "enabled": true,
-      "activateAtMultiple": 1.5,
-      "trailPct": 20
+      "activateAtMultiple": 1.3,
+      "trailPct": 15
     },
-    "maxHoldSeconds": 1800,
+    "maxHoldSeconds": 600,
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 3500
