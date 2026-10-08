@@ -266,3 +266,41 @@ test('three positions of 25% each keep a 25% reserve', async () => {
     process.chdir(cwd);
   }
 });
+
+test('scanner flags only tokens pumping per the rules', async () => {
+  const { MarketScanner } = await import('../src/discovery/scanner.js');
+  const config = makeConfig();
+  const PUMP = 'PumpMint1111111111111111111111111111111111';
+  const FLAT = 'FlatMint1111111111111111111111111111111111';
+  const pair = (mint: string, m5: number, buys: number, sells: number) => ({
+    chainId: 'solana', dexId: 'pumpswap', pairAddress: `pair-${mint}`,
+    baseToken: { address: mint, name: mint, symbol: mint.slice(0, 4) },
+    priceUsd: '0.001', txns: { m5: { buys, sells } }, volume: { m5: 50_000, h1: 200_000 },
+    priceChange: { m5, h1: m5 * 2 }, liquidity: { usd: 40_000 }, marketCap: 500_000,
+    pairCreatedAt: Date.now() - 3_600_000,
+  });
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    let body: unknown = [];
+    if (url.includes('geckoterminal')) {
+      body = { data: [{ relationships: { base_token: { data: { id: `solana_${PUMP}` } } } },
+        { relationships: { base_token: { data: { id: `solana_${FLAT}` } } } }] };
+    } else if (url.includes('/tokens/v1/solana/')) {
+      body = [pair(PUMP, 45, 120, 60), pair(FLAT, 3, 120, 60)];
+    }
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const scanner = new MarketScanner(config.scanner);
+    const signals: string[] = [];
+    scanner.on('signal', (c: TokenCandidate) => signals.push(c.mint));
+    await (scanner as unknown as { scan(): Promise<void> }).scan();
+    assert.deepEqual(signals, [PUMP]);
+    assert.ok(urls.some((u) => u.includes(`/tokens/v1/solana/${PUMP},${FLAT}`) || u.includes(`/tokens/v1/solana/${FLAT},${PUMP}`)));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

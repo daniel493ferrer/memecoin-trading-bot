@@ -7,8 +7,12 @@ import type { ExitReason, Position, PumpTradeEvent } from './types.js';
 import { log } from './logger.js';
 import { fmtPct, rawToUi, short } from './utils.js';
 
-/** Consecutive failed price reads on an AMM position before we assume a rug. */
-const MAX_PRICE_FAILURES = 5;
+/**
+ * Consecutive failed price reads on an AMM position before we assume a rug.
+ * High enough (about a minute of polling) that API rate limits are not
+ * mistaken for a pulled pool.
+ */
+const MAX_PRICE_FAILURES = 15;
 
 /**
  * Watches every open position and applies the exit rules in priority order:

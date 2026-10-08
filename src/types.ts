@@ -1,7 +1,7 @@
 /** Where a token currently trades. Determines which execution engine we use. */
 export type Venue = 'pump' | 'amm';
 
-export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium';
+export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium' | 'scanner';
 
 /** A freshly discovered token that passed (or is about to pass) filtering. */
 export interface TokenCandidate {

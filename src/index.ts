@@ -6,6 +6,9 @@ import { PumpPortalEngine } from './swap/pumpportal.js';
 import { JupiterEngine } from './swap/jupiter.js';
 import { PumpFunStream } from './discovery/pumpfun.js';
 import { RaydiumListener } from './discovery/raydium.js';
+import { MarketScanner, type ScanMetrics } from './discovery/scanner.js';
+import { appendFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
 import { PositionStore } from './positions.js';
 import { Trader } from './trader.js';
@@ -19,6 +22,11 @@ import { realizedPnlToday } from './risk.js';
 import type { ObservationReport } from './observation.js';
 import type { TokenCandidate } from './types.js';
 import { fmtSol, short, sleep } from './utils.js';
+
+async function appendJsonl(file: string, row: Record<string, unknown>): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  await appendFile(file, JSON.stringify(row) + '\n', 'utf8');
+}
 
 const BANNER = `
   ┌─────────────────────────────────────────────┐
@@ -91,6 +99,7 @@ async function main(): Promise<void> {
     paperAccount ? { account: paperAccount, stream: pumpStream } : null,
   );
   const raydium = new RaydiumListener(rpc);
+  const scanner = new MarketScanner(config.scanner);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
   const observer = new CandidateObserver(pumpStream, config.observation);
   const strategy = createStrategy(config.strategy.name);
@@ -196,28 +205,41 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Multiple candidates may finish observation together. Wait for the current
-    // buy instead of silently discarding a validated opportunity.
+    await enterPosition(candidate, `strategy ${strategy.name}: ${decision.reason}`, async (outcome, reason) => {
+      await recorder.record(candidate, observation, outcome, reason);
+      trackOutcome(candidate, observation, outcome, reason);
+    });
+  }
+
+  /**
+   * Shared entry gate for every discovery path: position limit, daily loss
+   * limit, cooldown and on-chain safety, then the order. `record` logs the
+   * final decision in the caller's own format.
+   */
+  async function enterPosition(
+    candidate: TokenCandidate,
+    buyReason: string,
+    record: (decision: 'buy' | 'reject', reason: string) => Promise<void>,
+  ): Promise<void> {
+    // Several candidates may qualify together. Wait for the current buy
+    // instead of silently discarding a validated opportunity.
     while (buying) {
       await sleep(100);
     }
     buying = true;
     try {
-      if (store.openCount >= config.entry.maxOpenPositions) {
-        const reason = `max open positions (${config.entry.maxOpenPositions}) reached`;
-        await recorder.record(candidate, observation, 'reject', reason);
-        trackOutcome(candidate, observation, 'reject', reason);
+      const skip = async (reason: string) => {
+        await record('reject', reason);
         log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
-        return;
-      }
+      };
       if (store.hasMint(candidate.mint)) return;
+      if (store.openCount >= config.entry.maxOpenPositions) {
+        return skip(`max open positions (${config.entry.maxOpenPositions}) reached`);
+      }
 
       const pnlToday = realizedPnlToday(live ? 'live' : 'paper');
       if (pnlToday <= -config.risk.maxDailyLossSol) {
-        const reason = `daily loss limit reached (${fmtSol(pnlToday)} today)`;
-        await recorder.record(candidate, observation, 'reject', reason);
-        log.warn(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason} — exits keep running`);
-        return;
+        return skip(`daily loss limit reached (${fmtSol(pnlToday)} today) — exits keep running`);
       }
 
       const cooldownMs =
@@ -229,18 +251,11 @@ async function main(): Promise<void> {
       // On-chain safety runs once, immediately before the order.
       const report = await safety.check(candidate);
       if (!report.ok) {
-        const reason = `safety rejected: ${report.reasons.join('; ')}`;
-        await recorder.record(candidate, observation, 'reject', reason);
-        trackOutcome(candidate, observation, 'reject', reason);
-        log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason}`);
-        return;
+        return skip(`safety rejected: ${report.reasons.join('; ')}`);
       }
 
-      const reason = `strategy ${strategy.name}: ${decision.reason}`;
-      await recorder.record(candidate, observation, 'buy', reason);
-      trackOutcome(candidate, observation, 'buy', reason);
-
-      log.info(`entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source}`);
+      await record('buy', buyReason);
+      log.info(`entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — ${buyReason}`);
       const position = await trader.buy(candidate, report.decimals);
       if (position) {
         lastBuyAt = Date.now();
@@ -250,6 +265,30 @@ async function main(): Promise<void> {
       buying = false;
     }
   }
+
+  // ------------------------------------------------------------ market scanner
+
+  const scannerLog = 'data/scanner.jsonl';
+  scanner.on('signal', (candidate: TokenCandidate, metrics: ScanMetrics) => {
+    // A pumping token keeps qualifying on every cycle; act on it once.
+    if (seenMints.has(candidate.mint) || store.hasMint(candidate.mint)) return;
+    seenMints.add(candidate.mint);
+    const rejected = safety.prefilter(candidate);
+    const summary =
+      `+${metrics.priceChange5mPct.toFixed(0)}% 5m, +${metrics.priceChange1hPct.toFixed(0)}% 1h, ` +
+      `${metrics.buys5m}/${metrics.sells5m} buys/sells, $${Math.round(metrics.volume5mUsd).toLocaleString()} vol 5m, ` +
+      `$${Math.round(metrics.liquidityUsd).toLocaleString()} liq on ${metrics.dexId}`;
+    const record = (decision: 'buy' | 'reject', reason: string) =>
+      appendJsonl(scannerLog, { ts: new Date().toISOString(), mint: candidate.mint, symbol: candidate.symbol, decision, reason, ...metrics });
+    if (rejected) {
+      void record('reject', `prefilter rejected: ${rejected}`);
+      return;
+    }
+    log.info(`${candidate.symbol} (${short(candidate.mint)}) pumping: ${summary}`);
+    void enterPosition(candidate, `scanner: ${summary}`, record).catch((err) =>
+      log.error(`scanner entry error for ${candidate.symbol}: ${(err as Error).message}`),
+    );
+  });
 
   pumpStream.on('newToken', (c: TokenCandidate) => {
     if (config.discovery.pumpfun.snipeNewTokens) void onCandidate(c);
@@ -293,6 +332,9 @@ async function main(): Promise<void> {
   if (config.discovery.raydium.enabled) {
     raydium.start();
   }
+  if (config.scanner.enabled) {
+    scanner.start();
+  }
   monitor.start();
 
   log.ok(
@@ -326,6 +368,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log.info('shutting down — open positions are saved and will resume on restart');
     monitor.stop();
+    scanner.stop();
     pumpStream.stop();
     await raydium.stop();
     store.save();

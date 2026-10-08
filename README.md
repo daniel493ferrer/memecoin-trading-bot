@@ -1,5 +1,8 @@
 # Memecoin Trading Bot
 
+> **Guía rápida en español: [GUIA.md](GUIA.md)** — the default setup is the
+> market scanner (buys tokens pumping now, sells 20% below the peak).
+
 Memecoin Trading Bot is a strategy-first, configurable trading bot for newly
 launched Solana memecoins. Its core advantage is a deliberately simple plug-in
 strategy system: users can add their own entry logic in an isolated strategy

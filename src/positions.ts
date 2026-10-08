@@ -8,7 +8,7 @@ const PositionSchema = z.object({
   id: z.string().min(1),
   mint: z.string().min(1),
   symbol: z.string(),
-  source: z.enum(['pumpfun', 'pumpfun-migration', 'raydium']),
+  source: z.enum(['pumpfun', 'pumpfun-migration', 'raydium', 'scanner']),
   venue: z.enum(['pump', 'amm']),
   wallet: z.string().min(1),
   creator: z.string().optional(),

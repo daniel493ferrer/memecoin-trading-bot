@@ -64,6 +64,22 @@ if (candidates.length > 0) {
   }
 }
 
+const scans = readJsonl<{ decision: 'buy' | 'reject'; reason: string }>('data/scanner.jsonl');
+if (scans.length > 0) {
+  section(`Scanner signals (${scans.length})`);
+  const buys = scans.filter((r) => r.decision === 'buy').length;
+  console.log(`bought: ${buys}`);
+  const reasons = new Map<string, number>();
+  for (const r of scans) {
+    if (r.decision !== 'reject') continue;
+    const key = bucket(r.reason);
+    reasons.set(key, (reasons.get(key) ?? 0) + 1);
+  }
+  for (const [reason, count] of [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+    console.log(`  ${String(count).padStart(6)}  ${reason}`);
+  }
+}
+
 const outcomes = readJsonl<OutcomeRow>('data/outcomes.jsonl');
 section(`Outcomes after decision (${outcomes.length})`);
 for (const decision of ['buy', 'reject'] as const) {

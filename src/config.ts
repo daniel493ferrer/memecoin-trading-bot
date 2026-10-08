@@ -21,6 +21,22 @@ export const ConfigSchema = z.object({
       enabled: z.boolean(),
     }),
   }),
+  /** Market scanner: buys tokens that are pumping now, at any age. */
+  scanner: z.object({
+    enabled: z.boolean().default(false),
+    intervalSeconds: z.number().int().min(10).default(20),
+    minPriceChange5mPct: z.number().default(30),
+    minPriceChange1hPct: z.number().default(0),
+    minVolume5mUsd: z.number().min(0).default(10_000),
+    minBuys5m: z.number().int().min(0).default(40),
+    /** Required buys per sell over the last 5 minutes. */
+    minBuySellRatio5m: z.number().min(0).default(1.2),
+    minLiquidityUsd: z.number().min(0).default(15_000),
+    /** 0 disables. */
+    maxAgeHours: z.number().min(0).default(0),
+    /** 0 disables. */
+    maxMarketCapUsd: z.number().min(0).default(0),
+  }).default({}),
   filters: z.object({
     symbolBlacklist: z.array(z.string()),
     symbolWhitelist: z.array(z.string()),
@@ -113,6 +129,7 @@ export type BotConfig = z.infer<typeof ConfigSchema>;
 
 export interface Env {
   heliusApiKey: string;
+  /** Empty when pump.fun discovery is off. */
   pumpPortalApiKey: string;
   liveTrading: boolean;
 }
@@ -162,8 +179,8 @@ export function loadConfig(): { config: BotConfig; env: Env } {
   }
   const liveTrading = liveTradingRaw === 'true';
 
-  const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim();
-  if (!pumpPortalApiKey) {
+  const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim() ?? '';
+  if (!pumpPortalApiKey && parsed.data.discovery.pumpfun.enabled) {
     throw new Error(
       'PUMPPORTAL_API_KEY is missing. PumpPortal subscribeTokenTrade requires an API key for live trade observation.',
     );

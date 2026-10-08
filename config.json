@@ -1,13 +1,25 @@
 {
   "discovery": {
     "pumpfun": {
-      "enabled": true,
-      "snipeNewTokens": true,
+      "enabled": false,
+      "snipeNewTokens": false,
       "snipeMigrations": false
     },
     "raydium": {
       "enabled": false
     }
+  },
+  "scanner": {
+    "enabled": true,
+    "intervalSeconds": 20,
+    "minPriceChange5mPct": 30,
+    "minPriceChange1hPct": 0,
+    "minVolume5mUsd": 10000,
+    "minBuys5m": 40,
+    "minBuySellRatio5m": 1.2,
+    "minLiquidityUsd": 15000,
+    "maxAgeHours": 0,
+    "maxMarketCapUsd": 0
   },
   "filters": {
     "symbolBlacklist": [
@@ -69,7 +81,7 @@
     "maxHoldSeconds": 3600,
     "exitOnDevSell": true,
     "sellOnMigration": false,
-    "priceCheckIntervalMs": 3500
+    "priceCheckIntervalMs": 4000
   },
   "risk": {
     "maxDailyLossSol": 0.1
