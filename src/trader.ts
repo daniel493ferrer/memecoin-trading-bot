@@ -9,6 +9,7 @@ import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { ExitReason, Position, TokenCandidate } from './types.js';
 import { curveBuyTokens, curveSellSol, type PaperAccount } from './paper.js';
 import { log, recordTrade } from './logger.js';
+import { dexPriceSol } from './dexprice.js';
 import { WSOL_MINT, fmtSol, rawToUi, short, sleep, solToLamports } from './utils.js';
 
 /** Base network fee per signature, added to simulated fills. */
@@ -404,8 +405,14 @@ export class Trader {
       grossSol = curveSellSol(curve, rawToUi(sellRaw, position.tokenDecimals), feePct);
     } else {
       const value = await this.jupiter.sellValueSol(position.mint, sellRaw, this.config.entry.slippageBps);
-      if (value === null) throw new Error('no Jupiter route for paper sell');
-      grossSol = value;
+      if (value !== null) {
+        grossSol = value;
+      } else {
+        // Same fallback as the monitor: price from the pool, minus venue fee.
+        const dex = await dexPriceSol(position.mint);
+        if (!dex) throw new Error(`no price for paper sell (Jupiter: ${this.jupiter.lastQuoteError ?? 'unknown'})`);
+        grossSol = dex.priceSol * rawToUi(sellRaw, position.tokenDecimals) * (1 - feePct / 100);
+      }
     }
     const solReceived = grossSol * (1 - extraSlippagePct / 100)
       - this.config.entry.priorityFeeSol - BASE_TX_FEE_SOL;

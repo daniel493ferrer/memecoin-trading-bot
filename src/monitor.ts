@@ -5,7 +5,11 @@ import type { JupiterEngine } from './swap/jupiter.js';
 import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { ExitReason, Position, PumpTradeEvent } from './types.js';
 import { log } from './logger.js';
+import { dexPriceSol } from './dexprice.js';
 import { fmtPct, rawToUi, short } from './utils.js';
+
+/** A pool below this much liquidity is treated as pulled. */
+const RUG_LIQUIDITY_USD = 1_000;
 
 /**
  * Consecutive failed price reads on an AMM position before we assume a rug.
@@ -102,15 +106,37 @@ export class ExitMonitor {
       return this.lastPumpPrice.get(position.mint) ?? null;
     }
     const remaining = BigInt(position.tokensRawRemaining);
+    const ui = rawToUi(remaining, position.tokenDecimals);
+    if (ui <= 0) return null;
     const value = await this.jupiter.sellValueSol(
       position.mint,
       remaining,
       this.config.entry.slippageBps,
     );
-    if (value === null) return null;
-    const ui = rawToUi(remaining, position.tokenDecimals);
-    return ui > 0 ? value / ui : null;
+    if (value !== null) return value / ui;
+
+    // Jupiter failing (rate limit, outage) is not a rug. Fall back to the
+    // pool price and only call it rugged when the liquidity is really gone.
+    const dex = await dexPriceSol(position.mint);
+    const now = Date.now();
+    if (now - (this.quoteWarnedAt.get(position.id) ?? 0) > 60_000) {
+      this.quoteWarnedAt.set(position.id, now);
+      log.warn(
+        `${position.symbol}: Jupiter quote failed (${this.jupiter.lastQuoteError ?? 'unknown'}) — ` +
+        (dex ? `using DexScreener price, liquidity $${Math.round(dex.liquidityUsd).toLocaleString()}` : 'no DexScreener price either'),
+      );
+    }
+    if (!dex) return null;
+    if (dex.liquidityUsd < RUG_LIQUIDITY_USD) {
+      this.pulledLiquidity.add(position.id);
+      return null;
+    }
+    return dex.priceSol;
   }
+
+  private quoteWarnedAt = new Map<string, number>();
+  /** Positions whose pool liquidity was seen below RUG_LIQUIDITY_USD. */
+  private pulledLiquidity = new Set<string>();
 
   // ------------------------------------------------------------- rule engine
 
@@ -142,7 +168,7 @@ export class ExitMonitor {
       if (position.venue === 'amm') {
         const fails = (this.priceFailures.get(position.id) ?? 0) + 1;
         this.priceFailures.set(position.id, fails);
-        if (fails >= MAX_PRICE_FAILURES) {
+        if (this.pulledLiquidity.has(position.id) || fails >= MAX_PRICE_FAILURES) {
           log.warn(`${position.symbol}: no route ${fails}x — treating as rugged`);
           return this.exit(position, 'rugged');
         }

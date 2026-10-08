@@ -49,11 +49,16 @@ export class JupiterEngine {
     if (amountRaw <= 0n) return 0;
     try {
       const q = await this.quote(mint, WSOL_MINT, amountRaw, slippageBps);
+      this.lastQuoteError = null;
       return Number(q.outAmount) / 1e9;
-    } catch {
+    } catch (err) {
+      this.lastQuoteError = (err as Error).message.slice(0, 160);
       return null;
     }
   }
+
+  /** Why the most recent sellValueSol returned null, for diagnostics. */
+  lastQuoteError: string | null = null;
 
   /** Swap SOL -> token. Returns the confirmed signature. */
   async buy(

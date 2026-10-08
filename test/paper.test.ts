@@ -306,3 +306,57 @@ test('scanner flags only tokens pumping per the rules', async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test('Jupiter outages fall back to DexScreener instead of booking a fake rug', async () => {
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  const realFetch = globalThis.fetch;
+  const MINT = 'AmmMint11111111111111111111111111111111111';
+  let jupiterUp = true;
+  let liquidityUsd = 50_000;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('/swap/v1/quote')) {
+      if (!jupiterUp) return new Response('rate limited', { status: 429 });
+      const amount = BigInt(new URL(url).searchParams.get('amount')!);
+      const out = url.includes(`inputMint=${MINT}`) ? amount / 1000n : amount * 1000n;
+      return new Response(JSON.stringify({ outAmount: out.toString() }), { status: 200 });
+    }
+    if (url.includes('dexscreener')) {
+      return new Response(JSON.stringify([{ chainId: 'solana', baseToken: { address: MINT },
+        quoteToken: { address: 'So11111111111111111111111111111111111111112' },
+        priceNative: '0.000001', liquidity: { usd: liquidityUsd } }]), { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  }) as typeof fetch;
+  try {
+    const config = makeConfig((c) => { c.entry.maxPositionSol = 1; });
+    const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+    const rpc = new Rpc('test-key');
+    const jupiter = new JupiterEngine(rpc, config.endpoints.jupiterBase);
+    const store = new PositionStore('p.json');
+    const trader = new Trader(
+      rpc, new WalletManager(config.wallets), new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade),
+      jupiter, store, config, { account: new PaperAccount(1), stream },
+    );
+    const monitor = new ExitMonitor(store, trader, jupiter, stream, config);
+    const tick = () => (monitor as unknown as { tick(): Promise<void> }).tick();
+    const position = await trader.buy(
+      { mint: MINT, symbol: 'AMM', name: 'Amm', source: 'scanner', venue: 'amm', discoveredAt: 0 }, 6,
+    );
+    assert.ok(position);
+
+    jupiterUp = false;
+    for (let i = 0; i < 20; i++) await tick();
+    assert.equal(store.openCount, 1, 'a Jupiter outage alone must not close the position');
+
+    liquidityUsd = 100;
+    await new Promise((r) => setTimeout(r, 3_100)); // let the DexScreener cache expire
+    await tick();
+    assert.equal(store.openCount, 0, 'pulled liquidity is a real rug');
+  } finally {
+    globalThis.fetch = realFetch;
+    process.chdir(cwd);
+  }
+});
