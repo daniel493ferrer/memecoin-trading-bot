@@ -44,6 +44,7 @@
   "entry": {
     "reservePct": 20,
     "positionPctOfOperatingCapital": 10,
+    "maxPositionSol": 0.05,
     "slippageBps": 2000,
     "priorityFeeSol": 0.0007,
     "maxOpenPositions": 3,
@@ -62,6 +63,9 @@
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 3500
+  },
+  "risk": {
+    "maxDailyLossSol": 0.1
   },
   "paper": {
     "startingBalanceSol": 1,

@@ -15,6 +15,7 @@ import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
 import { CandidateRecorder } from './recorder.js';
 import { PaperAccount } from './paper.js';
+import { realizedPnlToday } from './risk.js';
 import type { ObservationReport } from './observation.js';
 import type { TokenCandidate } from './types.js';
 import { fmtSol, short, sleep } from './utils.js';
@@ -35,6 +36,34 @@ async function main(): Promise<void> {
   if (live) wallets.load();
 
   const rpc = new Rpc(env.heliusApiKey);
+
+  if (live) {
+    // Real orders depend on Helius for broadcasting, confirmation and fill
+    // accounting. Refuse to start rather than discover a broken key mid-trade.
+    let totalSol = 0;
+    for (const wallet of wallets.all) {
+      let balance: number;
+      try {
+        balance = await rpc.getSolBalance(wallet.pubkey);
+      } catch (err) {
+        throw new Error(
+          `Helius RPC is not working (${(err as Error).message.slice(0, 160)}). ` +
+          'Check HELIUS_API_KEY before trading live.',
+        );
+      }
+      totalSol += balance;
+      log.info(`wallet ${wallet.name} (${short(wallet.pubkey.toBase58())}): ${fmtSol(balance)}`);
+    }
+    if (totalSol <= config.wallets.minSolReserve) {
+      throw new Error('trading wallets hold no usable SOL — fund wallets.json addresses first.');
+    }
+    log.warn(
+      `LIVE MODE — real SOL. Max ${fmtSol(config.entry.maxPositionSol)} per position, ` +
+      `${config.entry.maxOpenPositions} open at most, buying stops after ${fmtSol(config.risk.maxDailyLossSol)} ` +
+      'realized loss per day. Starting in 10s — Ctrl+C to abort.',
+    );
+    await sleep(10_000);
+  }
   const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
   const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
   const safety = new SafetyChecker(rpc, config.filters);
@@ -183,6 +212,14 @@ async function main(): Promise<void> {
       }
       if (store.hasMint(candidate.mint)) return;
 
+      const pnlToday = realizedPnlToday(live ? 'live' : 'paper');
+      if (pnlToday <= -config.risk.maxDailyLossSol) {
+        const reason = `daily loss limit reached (${fmtSol(pnlToday)} today)`;
+        await recorder.record(candidate, observation, 'reject', reason);
+        log.warn(`skip ${candidate.symbol} (${short(candidate.mint)}): ${reason} — exits keep running`);
+        return;
+      }
+
       const cooldownMs =
         config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
       if (lastBuyAt > 0 && cooldownMs > 0) {
@@ -260,7 +297,7 @@ async function main(): Promise<void> {
 
   log.ok(
     `bot running — ${live ? `${wallets.count} wallet(s)` : `paper balance ${fmtSol(paperAccount!.balanceSol)}`}, reserve ${config.entry.reservePct}%, ` +
-      `position ${config.entry.positionPctOfOperatingCapital}% of operating capital, ` +
+      `position ${config.entry.positionPctOfOperatingCapital}% of operating capital (max ${fmtSol(config.entry.maxPositionSol)}), ` +
       `max ${config.entry.maxOpenPositions} open position(s), ` +
       `mode ${live ? 'LIVE' : 'PAPER (simulated fills, no transactions sent)'}`,
   );

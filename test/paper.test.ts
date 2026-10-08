@@ -65,6 +65,7 @@ test('paper trade: buy on the curve, ride the move, exit on the trailing stop', 
     const config = makeConfig((c) => {
       c.entry.reservePct = 20;
       c.entry.positionPctOfOperatingCapital = 10;
+      c.entry.maxPositionSol = 1;
       c.entry.maxOpenPositions = 3;
       c.exit.takeProfits = [{ multiple: 2, sellPct: 50 }];
       c.exit.trailingStop = { enabled: true, activateAtMultiple: 1.5, trailPct: 20 };
@@ -182,4 +183,50 @@ test('pump.fun launches skip the RPC mint check and use 6 decimals', async () =>
     source: 'pumpfun', venue: 'pump', discoveredAt: 0,
   });
   assert.deepEqual(report, { ok: true, reasons: [], decimals: 6 });
+});
+
+test('position size never exceeds maxPositionSol', async () => {
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const config = makeConfig((c) => { c.entry.positionPctOfOperatingCapital = 100; c.entry.maxPositionSol = 0.05; });
+    const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+    const rpc = new Rpc('test-key');
+    const trader = new Trader(
+      rpc, new WalletManager(config.wallets), new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade),
+      new JupiterEngine(rpc, config.endpoints.jupiterBase), new PositionStore('p.json'), config,
+      { account: new PaperAccount(10), stream },
+    );
+    const mint = 'MintDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD';
+    let candidate: TokenCandidate | null = null;
+    stream.on('newToken', (c: TokenCandidate) => { candidate = c; stream.watchToken(c.mint); });
+    feed(stream, { txType: 'create', mint, symbol: 'CAP', name: 'Cap', traderPublicKey: 'dev',
+      solAmount: 1, vSolInBondingCurve: 31, vTokensInBondingCurve: 1_038_000_000 });
+    const position = await trader.buy(candidate!, 6);
+    assert.ok(position!.solSpent < 0.051 + config.entry.priorityFeeSol);
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('daily loss counts only today\'s closes for the matching mode', async () => {
+  const { realizedPnlToday } = await import('../src/risk.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    fs.mkdirSync('logs');
+    const today = new Date().toISOString();
+    fs.writeFileSync('logs/trades.jsonl', [
+      { ts: today, type: 'close', pnlSol: -0.04 },
+      { ts: today, type: 'close', pnlSol: -0.03 },
+      { ts: '2020-01-01T00:00:00.000Z', type: 'close', pnlSol: -5 },
+      { ts: today, type: 'buy', solIn: 1 },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    assert.ok(Math.abs(realizedPnlToday('live') - -0.07) < 1e-9);
+    assert.equal(realizedPnlToday('paper'), 0);
+  } finally {
+    process.chdir(cwd);
+  }
 });

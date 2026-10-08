@@ -202,9 +202,9 @@ export class Trader {
 
   /** Position size from a balance: reserve first, then a share of the rest. */
   private allocation(balanceSol: number): number | null {
-    const { reservePct, positionPctOfOperatingCapital, priorityFeeSol } = this.config.entry;
+    const { reservePct, positionPctOfOperatingCapital, priorityFeeSol, maxPositionSol } = this.config.entry;
     const operatingCapital = balanceSol * (1 - reservePct / 100);
-    const amountSol = operatingCapital * (positionPctOfOperatingCapital / 100);
+    const amountSol = Math.min(maxPositionSol, operatingCapital * (positionPctOfOperatingCapital / 100));
     const needed = amountSol + priorityFeeSol + this.config.wallets.minSolReserve;
     return amountSol > 0 && balanceSol >= needed ? amountSol : null;
   }

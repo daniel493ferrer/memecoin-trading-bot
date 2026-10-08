@@ -55,6 +55,8 @@ export const ConfigSchema = z.object({
   entry: z.object({
     reservePct: z.number().min(0).max(90),
     positionPctOfOperatingCapital: z.number().gt(0).max(100),
+    /** Hard cap on SOL committed to one position, whatever the balance. */
+    maxPositionSol: z.number().gt(0).default(0.05),
     slippageBps: z.number().int().min(50).max(10_000),
     priorityFeeSol: z.number().min(0),
     maxOpenPositions: z.number().int().min(1),
@@ -79,6 +81,11 @@ export const ConfigSchema = z.object({
     rotation: z.enum(['round-robin', 'random']),
     minSolReserve: z.number().min(0),
   }),
+  /** Portfolio-level brakes. */
+  risk: z.object({
+    /** Stop opening positions for the rest of the UTC day after this realized loss. */
+    maxDailyLossSol: z.number().gt(0).default(0.1),
+  }).default({}),
   /** Dry-run (LIVE_TRADING=false) simulation settings. */
   paper: z.object({
     startingBalanceSol: z.number().gt(0).default(1),
