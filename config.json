@@ -59,19 +59,14 @@
     "routeTimeoutSeconds": 45
   },
   "exit": {
-    "takeProfits": [
-      {
-        "multiple": 1.5,
-        "sellPct": 100
-      }
-    ],
+    "takeProfits": [],
     "stopLossPct": 20,
     "trailingStop": {
       "enabled": true,
-      "activateAtMultiple": 1.3,
-      "trailPct": 15
+      "activateAtMultiple": 1.01,
+      "trailPct": 20
     },
-    "maxHoldSeconds": 600,
+    "maxHoldSeconds": 3600,
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 3500
