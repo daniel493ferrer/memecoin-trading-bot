@@ -7,21 +7,26 @@ Cada 20 segundos el bot revisa los tokens de Solana que se están moviendo
 fuerte ahora mismo**, lo compra y lo vende cuando cae un **20 % desde su
 máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
 
-**Compra un token cuando, en los últimos 5 minutos:**
-- subió **+30 % o más**,
-- movió **$10 000 o más** de volumen,
-- tuvo **40 compras o más**, con más compras que ventas (1.2 compras por venta),
-- tiene **$15 000 o más** de liquidez (para poder vender luego),
-- y pasa la revisión de seguridad: nadie puede crear más tokens ni congelarlos,
-  y los 10 mayores dueños no tienen más del 35 %.
+**Compra un token solo si TODO se cumple** (tendencia confirmada, no pico):
+- tiene **1 hora de vida o más** (la mayoría muere en su primera hora),
+- **$30 000+ de liquidez** y capitalización menor de $20M (espacio para crecer),
+- subió **+40 % o más en la última hora** con **$100 000+ de volumen** en esa hora,
+- **sigue subiendo ahora**: entre **+5 % y +40 % en 5 min** (más de +40 % es un pico:
+  comprarlo es comprar el techo, y los datos dicen que eso pierde),
+- el volumen de los últimos 5 min va **por encima del ritmo de la hora** (el interés
+  acelera, no se apaga), con **50+ compras** y **1.3 compras por venta**,
+- pasa la seguridad: nadie puede crear más tokens ni congelarlos, y los 10 mayores
+  dueños no tienen más del 30 %.
 
-**Vende cuando:**
-- cae **20 % desde su precio más alto** (o 20 % desde la compra si nunca subió),
-- o pasa **1 hora** sin que ocurra lo anterior.
+**Vende así:**
+- **−25 %** desde la compra: corta la pérdida.
+- Al llegar a **2x**: vende la **mitad** (recuperas lo invertido; el resto va gratis).
+- Desde **1.5x**, si cae **25 % desde su máximo**: vende el resto. Sin tope de ganancia.
+- A las **4 horas** sale si nada de lo anterior pasó.
 
 **Dinero:** hasta **3 tokens a la vez**, cada uno con el **25 % del capital**.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
-**0.1 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
+**0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
 
 ## Cómo arrancarlo
 

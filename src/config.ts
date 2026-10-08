@@ -26,8 +26,14 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     intervalSeconds: z.number().int().min(10).default(20),
     minPriceChange5mPct: z.number().default(30),
+    /** 0 disables. Above this the 5m move is a spike: buying it buys the top. */
+    maxPriceChange5mPct: z.number().min(0).default(0),
     minPriceChange1hPct: z.number().default(0),
     minVolume5mUsd: z.number().min(0).default(10_000),
+    minVolume1hUsd: z.number().min(0).default(0),
+    /** Require the last 5 minutes to trade above the hour's average pace. */
+    requireVolumeAcceleration: z.boolean().default(false),
+    minAgeMinutes: z.number().min(0).default(0),
     minBuys5m: z.number().int().min(0).default(40),
     /** Required buys per sell over the last 5 minutes. */
     minBuySellRatio5m: z.number().min(0).default(1.2),

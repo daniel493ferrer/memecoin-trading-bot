@@ -209,15 +209,24 @@ export class MarketScanner extends EventEmitter {
   rejectReason(m: ScanMetrics): string | null {
     const c = this.cfg;
     if (m.liquidityUsd < c.minLiquidityUsd) return 'liquidity too low';
-    if (m.priceChange5mPct < c.minPriceChange5mPct) return '5m change too small';
-    if (m.priceChange1hPct < c.minPriceChange1hPct) return '1h change too small';
-    if (m.volume5mUsd < c.minVolume5mUsd) return '5m volume too low';
-    if (m.buys5m < c.minBuys5m) return 'too few buys';
-    if (m.buys5m < c.minBuySellRatio5m * Math.max(1, m.sells5m)) return 'sellers too strong';
+    // Survivors only: most launches die in their first hour.
+    if (m.ageMinutes < c.minAgeMinutes) return 'token too young';
     if (c.maxAgeHours > 0 && m.ageMinutes > c.maxAgeHours * 60) return 'token too old';
     if (c.maxMarketCapUsd > 0 && m.marketCapUsd > c.maxMarketCapUsd) return 'market cap too high';
+    // Trend confirmed over the hour...
+    if (m.priceChange1hPct < c.minPriceChange1hPct) return '1h change too small';
+    if (m.volume1hUsd < c.minVolume1hUsd) return '1h volume too low';
+    // ...still rising now, but not a vertical spike that buys the top.
+    if (m.priceChange5mPct < c.minPriceChange5mPct) return '5m change too small';
+    if (c.maxPriceChange5mPct > 0 && m.priceChange5mPct > c.maxPriceChange5mPct) return '5m spike too steep (late entry)';
+    if (m.volume5mUsd < c.minVolume5mUsd) return '5m volume too low';
+    // Interest accelerating: the last 5 minutes trade above the hourly pace.
+    if (c.requireVolumeAcceleration && m.volume5mUsd * 12 < m.volume1hUsd) return 'volume fading';
+    if (m.buys5m < c.minBuys5m) return 'too few buys';
+    if (m.buys5m < c.minBuySellRatio5m * Math.max(1, m.sells5m)) return 'sellers too strong';
     return null;
   }
+
 
   /** Warn at most once every 10 minutes per source. */
   private warnThrottled(key: string, message: string): void {

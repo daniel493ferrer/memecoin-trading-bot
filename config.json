@@ -12,14 +12,18 @@
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
-    "minPriceChange5mPct": 30,
-    "minPriceChange1hPct": 0,
-    "minVolume5mUsd": 10000,
-    "minBuys5m": 40,
-    "minBuySellRatio5m": 1.2,
-    "minLiquidityUsd": 15000,
+    "minLiquidityUsd": 30000,
+    "minAgeMinutes": 60,
     "maxAgeHours": 0,
-    "maxMarketCapUsd": 0
+    "maxMarketCapUsd": 20000000,
+    "minPriceChange1hPct": 40,
+    "minVolume1hUsd": 100000,
+    "minPriceChange5mPct": 5,
+    "maxPriceChange5mPct": 40,
+    "minVolume5mUsd": 15000,
+    "requireVolumeAcceleration": true,
+    "minBuys5m": 50,
+    "minBuySellRatio5m": 1.3
   },
   "filters": {
     "symbolBlacklist": [
@@ -33,7 +37,7 @@
     "minInitialLiquiditySol": 5,
     "requireMintAuthorityRevoked": true,
     "requireFreezeAuthorityRevoked": true,
-    "maxTop10HolderPct": 35
+    "maxTop10HolderPct": 30
   },
   "observation": {
     "enabled": true,
@@ -71,20 +75,25 @@
     "routeTimeoutSeconds": 45
   },
   "exit": {
-    "takeProfits": [],
-    "stopLossPct": 20,
+    "takeProfits": [
+      {
+        "multiple": 2,
+        "sellPct": 50
+      }
+    ],
+    "stopLossPct": 25,
     "trailingStop": {
       "enabled": true,
-      "activateAtMultiple": 1.01,
-      "trailPct": 20
+      "activateAtMultiple": 1.5,
+      "trailPct": 25
     },
-    "maxHoldSeconds": 3600,
+    "maxHoldSeconds": 14400,
     "exitOnDevSell": true,
     "sellOnMigration": false,
     "priceCheckIntervalMs": 4000
   },
   "risk": {
-    "maxDailyLossSol": 0.1
+    "maxDailyLossSol": 0.25
   },
   "paper": {
     "startingBalanceSol": 1,
