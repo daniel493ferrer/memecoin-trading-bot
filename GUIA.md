@@ -68,6 +68,15 @@ comprueba tu saldo y espera 10 segundos antes de operar (Ctrl+C para cancelar).
 | `[PAPER] CLOSED XYZ ... PnL` | Vendió; muestra la ganancia o pérdida |
 | `skip XYZ: safety rejected` | Lo descartó por seguridad |
 
+## Empezar la prueba desde cero
+
+```bash
+npm run reset-paper
+```
+
+Borra el saldo simulado y archiva las operaciones de prueba anteriores (así el
+límite de pérdida diaria vuelve a cero). No toca nada del modo real.
+
 ## Ver resultados
 
 ```bash
