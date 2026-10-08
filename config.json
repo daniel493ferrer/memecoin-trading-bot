@@ -49,9 +49,9 @@
     "name": "breakout"
   },
   "entry": {
-    "reservePct": 20,
-    "positionPctOfOperatingCapital": 10,
-    "maxPositionSol": 0.05,
+    "reservePct": 25,
+    "positionPctOfOperatingCapital": 33.33,
+    "maxPositionSol": 1000,
     "slippageBps": 2000,
     "priorityFeeSol": 0.0007,
     "maxOpenPositions": 3,

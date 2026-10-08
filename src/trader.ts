@@ -201,13 +201,22 @@ export class Trader {
   }
 
   /** Position size from a balance: reserve first, then a share of the rest. */
-  private allocation(balanceSol: number): number | null {
+  private allocation(balanceSol: number, walletKey: string): number | null {
     const { reservePct, positionPctOfOperatingCapital, priorityFeeSol, maxPositionSol } = this.config.entry;
-    const operatingCapital = balanceSol * (1 - reservePct / 100);
+    // Size from total capital (free SOL + cost of this wallet's open
+    // positions) so the 2nd and 3rd position are as large as the 1st.
+    const invested = this.store.open
+      .filter((p) => p.wallet === walletKey)
+      .reduce((sum, p) => sum + p.solSpent, 0);
+    const capital = balanceSol + invested;
+    const operatingCapital = capital * (1 - reservePct / 100);
     const amountSol = Math.min(maxPositionSol, operatingCapital * (positionPctOfOperatingCapital / 100));
-    const needed = amountSol + priorityFeeSol + this.config.wallets.minSolReserve;
+    // Never dip into the reserve or the minimum SOL kept for fees.
+    const reserve = capital * (reservePct / 100);
+    const needed = amountSol + priorityFeeSol + Math.max(reserve, this.config.wallets.minSolReserve);
     return amountSol > 0 && balanceSol >= needed ? amountSol : null;
   }
+
 
   // ------------------------------------------------------------------- live
 
@@ -333,7 +342,7 @@ export class Trader {
     for (let i = 0; i < this.wallets.count; i++) {
       const wallet = this.wallets.next();
       try {
-        const amountSol = this.allocation(await this.rpc.getSolBalance(wallet.pubkey));
+        const amountSol = this.allocation(await this.rpc.getSolBalance(wallet.pubkey), wallet.pubkey.toBase58());
         if (amountSol !== null) return { wallet, amountSol };
       } catch (err) {
         log.warn(`could not read SOL balance for ${wallet.name}: ${(err as Error).message}`);
@@ -345,7 +354,7 @@ export class Trader {
   // ------------------------------------------------------------------ paper
 
   private async paperBuy(paper: PaperContext, candidate: TokenCandidate, decimals: number): Promise<Fill | null> {
-    const amountSol = this.allocation(paper.account.balanceSol);
+    const amountSol = this.allocation(paper.account.balanceSol, 'paper');
     if (amountSol === null) {
       log.warn(
         `skipping ${candidate.symbol}: paper balance ${fmtSol(paper.account.balanceSol)} cannot fund the allocation`,

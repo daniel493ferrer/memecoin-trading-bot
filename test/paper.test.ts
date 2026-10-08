@@ -230,3 +230,39 @@ test('daily loss counts only today\'s closes for the matching mode', async () =>
     process.chdir(cwd);
   }
 });
+
+test('three positions of 25% each keep a 25% reserve', async () => {
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const config = makeConfig((c) => {
+      c.entry.reservePct = 25; c.entry.positionPctOfOperatingCapital = 33.33;
+      c.entry.maxPositionSol = 1000; c.entry.maxOpenPositions = 3; c.entry.priorityFeeSol = 0;
+    });
+    const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+    const rpc = new Rpc('test-key');
+    const account = new PaperAccount(1);
+    const trader = new Trader(
+      rpc, new WalletManager(config.wallets), new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade),
+      new JupiterEngine(rpc, config.endpoints.jupiterBase), new PositionStore('p.json'), config,
+      { account, stream },
+    );
+    stream.on('newToken', (c: TokenCandidate) => stream.watchToken(c.mint));
+    const spent: number[] = [];
+    for (const m of ['E', 'F', 'G', 'H']) {
+      const mint = `Mint${m.repeat(40)}`;
+      let candidate: TokenCandidate | null = null;
+      stream.once('newToken', (c: TokenCandidate) => { candidate = c; });
+      feed(stream, { txType: 'create', mint, symbol: m, name: m, traderPublicKey: 'dev',
+        solAmount: 1, vSolInBondingCurve: 31, vTokensInBondingCurve: 1_038_000_000 });
+      const position = await trader.buy(candidate!, 6);
+      if (position) spent.push(position.solSpent);
+    }
+    assert.equal(spent.length, 3, 'a fourth buy would dip into the reserve');
+    for (const s of spent) assert.ok(Math.abs(s - 0.25) < 0.001, `position cost ${s}`);
+    assert.ok(account.balanceSol >= 0.249);
+  } finally {
+    process.chdir(cwd);
+  }
+});
