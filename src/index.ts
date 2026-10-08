@@ -111,8 +111,17 @@ async function main(): Promise<void> {
       if (oldest) seenMints.delete(oldest);
     }
 
-    // Start trade capture immediately on discovery so the first seconds are
-    // not lost while the candidate passes cheap filters. Every later consumer
+    // Local filters run before any trade subscription: PumpPortal bills
+    // per-token trade data, so rejected launches must never be subscribed.
+    const rejected = safety.prefilter(candidate);
+    if (rejected) {
+      await recorder.recordPrefilterReject(candidate, `prefilter rejected: ${rejected}`);
+      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
+      return;
+    }
+
+    // Start trade capture right after the cheap filters so the first seconds
+    // are not lost. Every later consumer
     // (observer, outcome tracker, exit monitor) holds its own reference, so
     // this one is always released when the pipeline returns.
     const earlyTradeWatch = candidate.venue === 'pump';
@@ -127,13 +136,6 @@ async function main(): Promise<void> {
   }
 
   async function evaluateCandidate(candidate: TokenCandidate): Promise<void> {
-    const rejected = safety.prefilter(candidate);
-    if (rejected) {
-      await recorder.recordPrefilterReject(candidate, `prefilter rejected: ${rejected}`);
-      log.info(`skip ${candidate.symbol} (${short(candidate.mint)}): ${rejected}`);
-      return;
-    }
-
     // Observe first. Safety RPC checks are intentionally deferred until the
     // candidate proves it has enough live activity and the strategy wants it.
     const observation = await observer.observe(candidate);
@@ -262,6 +264,12 @@ async function main(): Promise<void> {
       `max ${config.entry.maxOpenPositions} open position(s), ` +
       `mode ${live ? 'LIVE' : 'PAPER (simulated fills, no transactions sent)'}`,
   );
+
+  // PumpPortal bills trade data per message; make the usage visible.
+  setInterval(() => {
+    const { messages, watched } = pumpStream.takeTradeMessageStats();
+    log.info(`PumpPortal usage: ${messages} trade messages in the last 10 min, ${watched} token(s) subscribed now`);
+  }, 10 * 60_000);
 
   // Periodic status line so long sessions stay legible.
   setInterval(() => {

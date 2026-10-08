@@ -23,6 +23,7 @@ export class PumpFunStream extends EventEmitter {
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
+  private tradeMessages = 0;
 
   constructor(
     private readonly wsUrl: string,
@@ -55,6 +56,13 @@ export class PumpFunStream extends EventEmitter {
     const refs = this.watchedMints.get(mint) ?? 0;
     this.watchedMints.set(mint, refs + 1);
     if (refs === 0) this.scheduleTradeSync();
+  }
+
+  /** Trade messages received since the last call, and current subscriptions. */
+  takeTradeMessageStats(): { messages: number; watched: number } {
+    const messages = this.tradeMessages;
+    this.tradeMessages = 0;
+    return { messages, watched: this.subscribedMints.size };
   }
 
   /** Latest known bonding-curve reserves for a watched mint, if any trade was seen. */
@@ -216,6 +224,7 @@ export class PumpFunStream extends EventEmitter {
       return;
     }
 
+    if (msg.txType === 'buy' || msg.txType === 'sell') this.tradeMessages++;
     if (
       (msg.txType === 'buy' || msg.txType === 'sell') &&
       this.watchedMints.has(msg.mint)

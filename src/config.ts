@@ -90,10 +90,10 @@ export const ConfigSchema = z.object({
   /** What the bot records for later research. */
   recording: z.object({
     /** How long to follow a candidate's price after its decision. */
-    outcomeSeconds: z.number().int().min(10).default(300),
+    outcomeSeconds: z.number().int().min(10).default(180),
     /** Fraction of observation-rejected candidates whose outcome is also tracked. */
-    rejectedOutcomeSampleRate: z.number().min(0).max(1).default(0.25),
-    maxConcurrentOutcomes: z.number().int().min(1).default(150),
+    rejectedOutcomeSampleRate: z.number().min(0).max(1).default(0.05),
+    maxConcurrentOutcomes: z.number().int().min(1).default(20),
   }).default({}),
   endpoints: z.object({
     jupiterBase: z.string().url(),
