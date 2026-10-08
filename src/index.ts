@@ -44,6 +44,15 @@ async function main(): Promise<void> {
   if (live) wallets.load();
 
   const rpc = new Rpc(env.heliusApiKey);
+  try {
+    await rpc.connection.getSlot();
+  } catch (err) {
+    throw new Error(
+      `Helius rejected the RPC request (${(err as Error).message.slice(0, 120)}). ` +
+      'HELIUS_API_KEY in .env is wrong: copy the API key from dashboard.helius.dev ' +
+      '(no quotes or spaces) and restart.',
+    );
+  }
 
   if (live) {
     // Real orders depend on Helius for broadcasting, confirmation and fill

@@ -94,7 +94,8 @@ Reinicia el bot (Ctrl+C y `npm start`) después de cambiar algo.
 | Mensaje | Solución |
 |---|---|
 | `scanner: no feed returned any token` | Revisa tu conexión a internet |
-| `Helius RPC is not working` | Revisa `HELIUS_API_KEY` en `.env` |
+| `Helius rejected the RPC request (401 ...)` | Tu `HELIUS_API_KEY` es incorrecta: cópiala de dashboard.helius.dev, sin comillas ni espacios |
+| `GeckoTerminal rate limit hit` | Normal de vez en cuando; se pausa 60 s solo |
 | `safety rejected: mint account unavailable (...)` | Problema con Helius; el texto entre paréntesis dice cuál |
 | `no Jupiter route` | Jupiter no encontró cómo comprar o vender ese token; se reintenta solo |
 

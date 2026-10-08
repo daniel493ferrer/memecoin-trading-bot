@@ -37,6 +37,13 @@ interface DexPair {
 
 const GECKO = 'https://api.geckoterminal.com/api/v2/networks/solana';
 const DEXSCREENER = 'https://api.dexscreener.com';
+const GECKO_FEEDS: Array<[string, string]> = [
+  ['gecko-trending-5m', 'trending_pools?duration=5m'],
+  ['gecko-trending-1h', 'trending_pools?duration=1h'],
+  ['gecko-new', 'new_pools'],
+];
+/** How long a GeckoTerminal-listed token stays in the scan set. */
+const GECKO_CACHE_MS = 3 * 60_000;
 /** DexScreener accepts up to 30 token addresses per lookup. */
 const BATCH = 30;
 const SOL_MINTS = new Set([
@@ -57,7 +64,11 @@ const SOL_MINTS = new Set([
 export class MarketScanner extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private warned = new Set<string>();
+  private warnedAt = new Map<string, number>();
+  private geckoTurn = 0;
+  private geckoPausedUntil = 0;
+  /** GeckoTerminal addresses by last time a list included them. */
+  private geckoCache = new Map<string, number>();
 
   constructor(private readonly cfg: BotConfig['scanner']) {
     super();
@@ -95,11 +106,11 @@ export class MarketScanner extends EventEmitter {
       try {
         pairs = await fetchJson<DexPair[]>(`${DEXSCREENER}/tokens/v1/solana/${batch.join(',')}`);
       } catch (err) {
-        this.warnOnce('dexscreener', `DexScreener lookup failed: ${(err as Error).message}`);
+        this.warnThrottled('dexscreener', `DexScreener lookup failed: ${(err as Error).message}`);
         continue;
       }
       if (!Array.isArray(pairs)) {
-        this.warnOnce('dexscreener-shape', 'DexScreener returned an unexpected response shape');
+        this.warnThrottled('dexscreener-shape', 'DexScreener returned an unexpected response shape');
         continue;
       }
 
@@ -122,24 +133,44 @@ export class MarketScanner extends EventEmitter {
     log.info(`scanner: ${addresses.length} tokens checked, ${passed} pumping per rules`);
   }
 
-  /** Unique token addresses from all discovery feeds; a failing feed is skipped. */
+  /**
+   * Unique token addresses from all discovery feeds; a failing feed is
+   * skipped. GeckoTerminal's free tier allows only a few calls per minute,
+   * so one of its lists is fetched per cycle in rotation and its addresses
+   * are remembered for a few minutes; a 429 pauses it for a minute.
+   */
   private async collectAddresses(): Promise<string[]> {
     const found = new Set<string>();
     const feeds: Array<[string, () => Promise<string[]>]> = [
-      ['gecko-trending', () => this.geckoPools(`${GECKO}/trending_pools?duration=5m`)],
-      ['gecko-trending-1h', () => this.geckoPools(`${GECKO}/trending_pools?duration=1h`)],
-      ['gecko-new', () => this.geckoPools(`${GECKO}/new_pools`)],
       ['dex-profiles', () => this.dexList(`${DEXSCREENER}/token-profiles/latest/v1`)],
       ['dex-boosts', () => this.dexList(`${DEXSCREENER}/token-boosts/latest/v1`)],
     ];
+    if (Date.now() >= this.geckoPausedUntil) {
+      const [name, path] = GECKO_FEEDS[this.geckoTurn++ % GECKO_FEEDS.length];
+      feeds.push([name, async () => {
+        const list = await this.geckoPools(`${GECKO}/${path}`);
+        for (const a of list) this.geckoCache.set(a, Date.now());
+        return list;
+      }]);
+    }
     const results = await Promise.allSettled(feeds.map(([, fn]) => fn()));
     results.forEach((result, i) => {
       if (result.status === 'fulfilled') {
         for (const a of result.value) if (!SOL_MINTS.has(a)) found.add(a);
       } else {
-        this.warnOnce(feeds[i][0], `scanner feed ${feeds[i][0]} failed: ${String(result.reason).slice(0, 160)}`);
+        const message = String(result.reason);
+        if (feeds[i][0].startsWith('gecko') && message.includes('HTTP 429')) {
+          this.geckoPausedUntil = Date.now() + 60_000;
+          this.warnThrottled('gecko-429', 'GeckoTerminal rate limit hit — pausing it for 60s');
+          return;
+        }
+        this.warnThrottled(feeds[i][0], `scanner feed ${feeds[i][0]} failed: ${message.slice(0, 160)}`);
       }
     });
+    for (const [address, seenAt] of this.geckoCache) {
+      if (Date.now() - seenAt > GECKO_CACHE_MS) this.geckoCache.delete(address);
+      else if (!SOL_MINTS.has(address)) found.add(address);
+    }
     return [...found];
   }
 
@@ -188,10 +219,12 @@ export class MarketScanner extends EventEmitter {
     return null;
   }
 
-  private warnOnce(key: string, message: string): void {
-    if (this.warned.has(key)) return;
-    this.warned.add(key);
-    log.warn(`${message} (further errors from this source are silenced)`);
+  /** Warn at most once every 10 minutes per source. */
+  private warnThrottled(key: string, message: string): void {
+    const last = this.warnedAt.get(key) ?? 0;
+    if (Date.now() - last < 10 * 60_000) return;
+    this.warnedAt.set(key, Date.now());
+    log.warn(message);
   }
 }
 
