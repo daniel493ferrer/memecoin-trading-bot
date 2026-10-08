@@ -2,7 +2,8 @@
 
 ## Qué hace
 
-Cada 20 segundos el bot revisa los tokens de Solana que se están moviendo
+Cada 20 segundos el bot revisa los tokens que se están moviendo en **Solana,
+Base, BNB Chain y Robinhood Chain**
 (fuentes gratuitas: GeckoTerminal y DexScreener). Cuando uno **está subiendo
 fuerte ahora mismo**, lo compra y lo vende cuando cae un **20 % desde su
 máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
@@ -27,6 +28,17 @@ máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
 **Dinero:** hasta **3 tokens a la vez**, cada uno con el **25 % del capital**.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 **0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
+
+## Varias redes
+
+- **Solana** opera en modo prueba y en modo real.
+- **Base, BNB y Robinhood** funcionan **solo en modo prueba**: sirven para medir en
+  qué red gana más la estrategia antes de construir compras reales ahí.
+- En esas redes se revisa antes de "comprar" que el token no sea una trampa
+  (honeypot, impuestos ocultos) con GoPlus, que es gratis.
+- `npm run report` muestra al final **"by chain"**: % de aciertos y rendimiento por red.
+- Para quitar o añadir redes: `config.json` → `scanner.chains`. Al arrancar, el
+  bot muestra `DexScreener chain ids seen...` con los nombres exactos de redes.
 
 ## Cómo arrancarlo
 

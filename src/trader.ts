@@ -9,7 +9,7 @@ import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { ExitReason, Position, TokenCandidate } from './types.js';
 import { curveBuyTokens, curveSellSol, type PaperAccount } from './paper.js';
 import { log, recordTrade } from './logger.js';
-import { dexPriceSol } from './dexprice.js';
+import { dexPrice, dexPriceSol } from './dexprice.js';
 import { WSOL_MINT, fmtSol, rawToUi, short, sleep, solToLamports } from './utils.js';
 
 /** Base network fee per signature, added to simulated fills. */
@@ -91,6 +91,7 @@ export class Trader {
       openedAt: Date.now(),
       status: 'open',
       buySignature: fill.signature,
+      chain: candidate.chain,
     };
     this.store.add(position);
 
@@ -180,6 +181,7 @@ export class Trader {
     recordTrade({
       type: 'close',
       mode: this.mode,
+      chain: position.chain ?? 'solana',
       mint: position.mint,
       symbol: position.symbol,
       source: position.source,
@@ -191,6 +193,11 @@ export class Trader {
       peakMultiple: position.peakPrice / position.entryPrice,
       holdSeconds: Math.round((Date.now() - position.openedAt) / 1000),
     });
+  }
+
+  /** DexScreener chain id for a configured scanner chain name. */
+  private dexChainId(chainName: string): string {
+    return this.config.scanner.chains.find((c) => c.name === chainName)?.dexscreener ?? chainName;
   }
 
   private get mode(): 'paper' | 'live' {
@@ -365,7 +372,15 @@ export class Trader {
     const { feePct, extraSlippagePct } = this.config.paper;
 
     let tokensRaw: bigint;
-    if (candidate.venue === 'pump') {
+    if (candidate.chain && candidate.chain !== 'solana') {
+      // Other chains: price from the pool in USD. The position's "SOL"
+      // amounts are the accounting unit, so returns stay exact in %.
+      const chainId = this.dexChainId(candidate.chain);
+      const dex = await dexPrice(candidate.mint, chainId);
+      if (!dex || dex.priceUsd <= 0) throw new Error(`no ${candidate.chain} pool price for paper fill`);
+      const tokensUi = (amountSol * (1 - feePct / 100) * (1 - extraSlippagePct / 100)) / dex.priceUsd;
+      tokensRaw = BigInt(Math.floor(tokensUi * 10 ** decimals));
+    } else if (candidate.venue === 'pump') {
       const curve = paper.stream.getCurve(candidate.mint);
       if (!curve) throw new Error('no bonding-curve reserves seen yet for paper fill');
       const tokensUi = curveBuyTokens(curve, amountSol, feePct) * (1 - extraSlippagePct / 100);
@@ -399,7 +414,11 @@ export class Trader {
   ): Promise<{ soldRaw: bigint; solReceived: number; signature: string } | null> {
     const { feePct, extraSlippagePct } = this.config.paper;
     let grossSol: number;
-    if (position.venue === 'pump') {
+    if (position.chain && position.chain !== 'solana') {
+      const dex = await dexPrice(position.mint, this.dexChainId(position.chain));
+      if (!dex || dex.priceUsd <= 0) throw new Error(`no ${position.chain} pool price for paper sell`);
+      grossSol = dex.priceUsd * rawToUi(sellRaw, position.tokenDecimals) * (1 - feePct / 100);
+    } else if (position.venue === 'pump') {
       const curve = paper.stream.getCurve(position.mint);
       if (!curve) throw new Error('no bonding-curve reserves available for paper sell');
       grossSol = curveSellSol(curve, rawToUi(sellRaw, position.tokenDecimals), feePct);

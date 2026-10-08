@@ -3,6 +3,7 @@ import type { BotConfig } from './config.js';
 import type { Rpc } from './rpc.js';
 import type { SafetyReport, TokenCandidate } from './types.js';
 import { sleep } from './utils.js';
+import { evmTokenSafety } from './evmsafety.js';
 
 const PUMP_FUN_DECIMALS = 6;
 
@@ -21,9 +22,14 @@ export class SafetyChecker {
   constructor(
     private readonly rpc: Rpc,
     private readonly filters: BotConfig['filters'],
+    private readonly chains: BotConfig['scanner']['chains'] = [],
   ) {}
 
   async check(candidate: TokenCandidate): Promise<SafetyReport> {
+    if (candidate.chain && candidate.chain !== 'solana') {
+      return this.checkEvm(candidate);
+    }
+
     // Tokens created through the pump.fun program always have their mint and
     // freeze authority revoked and use 6 decimals; the program enforces it.
     // Re-checking over RPC only adds seconds of entry latency and a point of
@@ -112,6 +118,18 @@ export class SafetyChecker {
     }
 
     return { error: lastError };
+  }
+
+  /**
+   * EVM chains (paper only): honeypot and tax check through GoPlus when the
+   * chain has a GoPlus id. Tokens GoPlus cannot assess are allowed in paper
+   * mode so the chain can still be measured; the reason is logged.
+   */
+  private async checkEvm(candidate: TokenCandidate): Promise<SafetyReport> {
+    const chain = this.chains.find((c) => c.name === candidate.chain);
+    if (!chain?.goplusChainId) return { ok: true, reasons: [], decimals: PUMP_FUN_DECIMALS };
+    const result = await evmTokenSafety(chain.goplusChainId, candidate.mint);
+    return { ok: result.reasons.length === 0, reasons: result.reasons, decimals: PUMP_FUN_DECIMALS };
   }
 
   /** Cheap, purely-local filters. Runs before any RPC is spent on a candidate. */

@@ -360,3 +360,73 @@ test('Jupiter outages fall back to DexScreener instead of booking a fake rug', a
     process.chdir(cwd);
   }
 });
+
+test('other chains: scanner signal, GoPlus honeypot block, paper trade in USD terms', async () => {
+  const { MarketScanner } = await import('../src/discovery/scanner.js');
+  const { SafetyChecker } = await import('../src/safety.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  const realFetch = globalThis.fetch;
+  const TOKEN = '0xAbCdEf0000000000000000000000000000000001';
+  const HONEY = '0xAbCdEf0000000000000000000000000000000002';
+  let priceUsd = 0.01;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (url.includes('token-profiles')) return json([{ chainId: 'base', tokenAddress: TOKEN }, { chainId: 'base', tokenAddress: HONEY }]);
+    if (url.includes('gopluslabs')) {
+      const addr = new URL(url).searchParams.get('contract_addresses')!.toLowerCase();
+      return json({ code: 1, result: { [addr]: { is_honeypot: addr === HONEY.toLowerCase() ? '1' : '0', buy_tax: '0', sell_tax: '0' } } });
+    }
+    if (url.includes('/tokens/v1/base/')) {
+      return json([TOKEN, HONEY].filter((a) => url.includes(a)).map((a) => ({
+        chainId: 'base', dexId: 'uniswap', pairAddress: `p-${a}`,
+        baseToken: { address: a, name: 'Tok', symbol: 'TOK' }, quoteToken: { address: '0xweth' },
+        priceUsd: String(priceUsd), txns: { m5: { buys: 120, sells: 60 } }, volume: { m5: 50_000, h1: 200_000 },
+        priceChange: { m5: 20, h1: 80 }, liquidity: { usd: 60_000 }, marketCap: 900_000,
+        pairCreatedAt: Date.now() - 2 * 3_600_000,
+      })));
+    }
+    return json([]);
+  }) as typeof fetch;
+  try {
+    const config = makeConfig((c) => {
+      c.scanner.chains = [{ name: 'base', dexscreener: 'base', goplusChainId: '8453' }];
+      c.entry.maxPositionSol = 1;
+    });
+    const scanner = new MarketScanner(config.scanner);
+    const signals: TokenCandidate[] = [];
+    scanner.on('signal', (c: TokenCandidate) => signals.push(c));
+    await (scanner as unknown as { scan(): Promise<void> }).scan();
+    assert.deepEqual(signals.map((c) => [c.chain, c.mint]).sort(), [['base', HONEY], ['base', TOKEN]].sort());
+
+    const rpc = new Rpc('test-key');
+    const safety = new SafetyChecker(rpc, config.filters, config.scanner.chains);
+    const honey = await safety.check(signals.find((c) => c.mint === HONEY)!);
+    assert.equal(honey.ok, false);
+    assert.match(honey.reasons.join(), /honeypot/);
+    const good = await safety.check(signals.find((c) => c.mint === TOKEN)!);
+    assert.equal(good.ok, true);
+
+    const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+    const jupiter = new JupiterEngine(rpc, config.endpoints.jupiterBase);
+    const store = new PositionStore('p.json');
+    const account = new PaperAccount(1);
+    const trader = new Trader(
+      rpc, new WalletManager(config.wallets), new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade),
+      jupiter, store, config, { account, stream },
+    );
+    const position = await trader.buy(signals.find((c) => c.mint === TOKEN)!, good.decimals);
+    assert.ok(position);
+    assert.equal(position!.chain, 'base');
+    priceUsd = 0.03; // 3x
+    await new Promise((r) => setTimeout(r, 3_100)); // DexScreener price cache
+    assert.ok(await trader.sell(position!, 100, 'trailing-stop'));
+    assert.equal(store.openCount, 0);
+    assert.ok(account.balanceSol > 1.3, `3x on a 0.25 SOL position should leave ~1.45 SOL, got ${account.balanceSol}`);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.chdir(cwd);
+  }
+});

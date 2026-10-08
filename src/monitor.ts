@@ -5,7 +5,7 @@ import type { JupiterEngine } from './swap/jupiter.js';
 import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { ExitReason, Position, PumpTradeEvent } from './types.js';
 import { log } from './logger.js';
-import { dexPriceSol } from './dexprice.js';
+import { dexPrice, dexPriceSol } from './dexprice.js';
 import { fmtPct, rawToUi, short } from './utils.js';
 
 /** A pool below this much liquidity is treated as pulled. */
@@ -108,6 +108,17 @@ export class ExitMonitor {
     const remaining = BigInt(position.tokensRawRemaining);
     const ui = rawToUi(remaining, position.tokenDecimals);
     if (ui <= 0) return null;
+    if (position.chain && position.chain !== 'solana') {
+      // Paper-only chains: the pool's USD price is the position's price unit.
+      const chainId = this.config.scanner.chains.find((c) => c.name === position.chain)?.dexscreener ?? position.chain;
+      const dex = await dexPrice(position.mint, chainId);
+      if (!dex || dex.priceUsd <= 0) return null;
+      if (dex.liquidityUsd < RUG_LIQUIDITY_USD) {
+        this.pulledLiquidity.add(position.id);
+        return null;
+      }
+      return dex.priceUsd;
+    }
     const value = await this.jupiter.sellValueSol(
       position.mint,
       remaining,

@@ -4,8 +4,9 @@ import { log } from '../logger.js';
 import { fetchJson, short } from '../utils.js';
 import type { TokenCandidate } from '../types.js';
 
-/** Market snapshot of one token's most liquid Solana pair (DexScreener). */
+/** Market snapshot of one token's most liquid pair (DexScreener). */
 export interface ScanMetrics {
+  chain: string;
   pairAddress: string;
   dexId: string;
   priceUsd: number;
@@ -35,7 +36,7 @@ interface DexPair {
   pairCreatedAt?: number;
 }
 
-const GECKO = 'https://api.geckoterminal.com/api/v2/networks/solana';
+const GECKO = 'https://api.geckoterminal.com/api/v2/networks';
 const DEXSCREENER = 'https://api.dexscreener.com';
 const GECKO_FEEDS: Array<[string, string]> = [
   ['gecko-trending-5m', 'trending_pools?duration=5m'],
@@ -43,7 +44,9 @@ const GECKO_FEEDS: Array<[string, string]> = [
   ['gecko-new', 'new_pools'],
 ];
 /** How long a GeckoTerminal-listed token stays in the scan set. */
-const GECKO_CACHE_MS = 3 * 60_000;
+const GECKO_CACHE_MS = 5 * 60_000;
+/** Quote/stable assets that are never the token we want to trade. */
+const BASE_ASSET_SYMBOLS = new Set(['SOL', 'WSOL', 'ETH', 'WETH', 'BNB', 'WBNB', 'USDC', 'USDT', 'DAI', 'USD1', 'USDE', 'FDUSD']);
 /** DexScreener accepts up to 30 token addresses per lookup. */
 const BATCH = 30;
 const SOL_MINTS = new Set([
@@ -53,7 +56,8 @@ const SOL_MINTS = new Set([
 ]);
 
 /**
- * Finds Solana tokens that are pumping right now, whatever their age.
+ * Finds tokens that are pumping right now, whatever their age, on every
+ * configured chain (Solana, Base, BNB Chain, Robinhood Chain, ...).
  *
  * Every cycle it gathers addresses from free public feeds (GeckoTerminal
  * trending and new pools, DexScreener latest profiles and boosts), looks all
@@ -61,14 +65,17 @@ const SOL_MINTS = new Set([
  * 'signal' (candidate, metrics) for tokens that meet the configured rules.
  * Tokens that do not qualify yet are re-checked on later cycles.
  */
+type Chain = BotConfig['scanner']['chains'][number];
+
 export class MarketScanner extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private warnedAt = new Map<string, number>();
   private geckoTurn = 0;
   private geckoPausedUntil = 0;
-  /** GeckoTerminal addresses by last time a list included them. */
+  /** "chain:address" keys by last time a GeckoTerminal list included them. */
   private geckoCache = new Map<string, number>();
+  private loggedChains = false;
 
   constructor(private readonly cfg: BotConfig['scanner']) {
     super();
@@ -93,85 +100,103 @@ export class MarketScanner extends EventEmitter {
   }
 
   private async scan(): Promise<void> {
-    const addresses = await this.collectAddresses();
-    if (addresses.length === 0) {
+    const byChain = await this.collectAddresses();
+    const total = [...byChain.values()].reduce((n, set) => n + set.size, 0);
+    if (total === 0) {
       log.warn('scanner: no feed returned any token this cycle — check the internet connection');
       return;
     }
 
     let passed = 0;
-    for (let i = 0; i < addresses.length; i += BATCH) {
-      const batch = addresses.slice(i, i + BATCH);
-      let pairs: DexPair[];
-      try {
-        pairs = await fetchJson<DexPair[]>(`${DEXSCREENER}/tokens/v1/solana/${batch.join(',')}`);
-      } catch (err) {
-        this.warnThrottled('dexscreener', `DexScreener lookup failed: ${(err as Error).message}`);
-        continue;
-      }
-      if (!Array.isArray(pairs)) {
-        this.warnThrottled('dexscreener-shape', 'DexScreener returned an unexpected response shape');
-        continue;
-      }
+    const perChain: string[] = [];
+    for (const chain of this.cfg.chains) {
+      const addresses = [...(byChain.get(chain.dexscreener) ?? [])];
+      perChain.push(`${chain.name} ${addresses.length}`);
+      for (let i = 0; i < addresses.length; i += BATCH) {
+        const batch = addresses.slice(i, i + BATCH);
+        let pairs: DexPair[];
+        try {
+          pairs = await fetchJson<DexPair[]>(`${DEXSCREENER}/tokens/v1/${chain.dexscreener}/${batch.join(',')}`);
+        } catch (err) {
+          this.warnThrottled(`dexscreener-${chain.name}`, `DexScreener lookup failed on ${chain.name}: ${(err as Error).message}`);
+          continue;
+        }
+        if (!Array.isArray(pairs)) {
+          this.warnThrottled('dexscreener-shape', 'DexScreener returned an unexpected response shape');
+          continue;
+        }
 
-      for (const [mint, pair] of this.bestPairs(pairs)) {
-        const metrics = toMetrics(pair);
-        const reason = this.rejectReason(metrics);
-        if (reason) continue;
-        passed++;
-        const candidate: TokenCandidate = {
-          mint,
-          symbol: pair.baseToken?.symbol ?? short(mint),
-          name: pair.baseToken?.name ?? '?',
-          source: 'scanner',
-          venue: 'amm',
-          discoveredAt: Date.now(),
-        };
-        this.emit('signal', candidate, metrics);
+        for (const [mint, pair] of this.bestPairs(pairs, chain.dexscreener)) {
+          const metrics = toMetrics(pair, chain.name);
+          if (this.rejectReason(metrics)) continue;
+          passed++;
+          const candidate: TokenCandidate = {
+            mint,
+            symbol: pair.baseToken?.symbol ?? short(mint),
+            name: pair.baseToken?.name ?? '?',
+            source: 'scanner',
+            venue: 'amm',
+            chain: chain.name,
+            discoveredAt: Date.now(),
+          };
+          this.emit('signal', candidate, metrics);
+        }
       }
     }
-    log.info(`scanner: ${addresses.length} tokens checked, ${passed} pumping per rules`);
+    log.info(`scanner: ${total} tokens checked (${perChain.join(', ')}), ${passed} pumping per rules`);
   }
 
   /**
-   * Unique token addresses from all discovery feeds; a failing feed is
-   * skipped. GeckoTerminal's free tier allows only a few calls per minute,
-   * so one of its lists is fetched per cycle in rotation and its addresses
-   * are remembered for a few minutes; a 429 pauses it for a minute.
+   * Token addresses per DexScreener chain id from all discovery feeds; a
+   * failing feed is skipped. GeckoTerminal's free tier allows only a few
+   * calls per minute, so one (chain, list) pair is fetched per cycle in
+   * rotation and its addresses are remembered for a few minutes; a 429
+   * pauses it for a minute.
    */
-  private async collectAddresses(): Promise<string[]> {
-    const found = new Set<string>();
-    const feeds: Array<[string, () => Promise<string[]>]> = [
-      ['dex-profiles', () => this.dexList(`${DEXSCREENER}/token-profiles/latest/v1`)],
-      ['dex-boosts', () => this.dexList(`${DEXSCREENER}/token-boosts/latest/v1`)],
+  private async collectAddresses(): Promise<Map<string, Set<string>>> {
+    const wanted = new Set(this.cfg.chains.map((c) => c.dexscreener));
+    const found = new Map<string, Set<string>>();
+    const add = (chainId: string, address: string) => {
+      if (!wanted.has(chainId) || !address || SOL_MINTS.has(address)) return;
+      if (!found.has(chainId)) found.set(chainId, new Set());
+      found.get(chainId)!.add(address);
+    };
+
+    const feeds: Array<[string, () => Promise<void>]> = [
+      ['dex-profiles', () => this.dexList(`${DEXSCREENER}/token-profiles/latest/v1`, add)],
+      ['dex-boosts', () => this.dexList(`${DEXSCREENER}/token-boosts/latest/v1`, add)],
     ];
-    if (Date.now() >= this.geckoPausedUntil) {
-      const [name, path] = GECKO_FEEDS[this.geckoTurn++ % GECKO_FEEDS.length];
-      feeds.push([name, async () => {
-        const list = await this.geckoPools(`${GECKO}/${path}`);
-        for (const a of list) this.geckoCache.set(a, Date.now());
-        return list;
+    const geckoChains = this.cfg.chains.filter((c) => c.gecko);
+    if (geckoChains.length > 0 && Date.now() >= this.geckoPausedUntil) {
+      const turn = this.geckoTurn++;
+      const chain = geckoChains[turn % geckoChains.length];
+      const [name, path] = GECKO_FEEDS[Math.floor(turn / geckoChains.length) % GECKO_FEEDS.length];
+      feeds.push([`${name}-${chain.name}`, async () => {
+        for (const a of await this.geckoPools(`${GECKO}/${chain.gecko}/${path}`)) {
+          this.geckoCache.set(`${chain.dexscreener}:${a}`, Date.now());
+        }
       }]);
     }
     const results = await Promise.allSettled(feeds.map(([, fn]) => fn()));
     results.forEach((result, i) => {
-      if (result.status === 'fulfilled') {
-        for (const a of result.value) if (!SOL_MINTS.has(a)) found.add(a);
-      } else {
-        const message = String(result.reason);
-        if (feeds[i][0].startsWith('gecko') && message.includes('HTTP 429')) {
-          this.geckoPausedUntil = Date.now() + 60_000;
-          this.warnThrottled('gecko-429', 'GeckoTerminal rate limit hit — pausing it for 60s');
-          return;
-        }
-        this.warnThrottled(feeds[i][0], `scanner feed ${feeds[i][0]} failed: ${message.slice(0, 160)}`);
+      if (result.status === 'fulfilled') return;
+      const message = String(result.reason);
+      if (feeds[i][0].startsWith('gecko') && message.includes('HTTP 429')) {
+        this.geckoPausedUntil = Date.now() + 60_000;
+        this.warnThrottled('gecko-429', 'GeckoTerminal rate limit hit — pausing it for 60s');
+        return;
       }
+      this.warnThrottled(feeds[i][0], `scanner feed ${feeds[i][0]} failed: ${message.slice(0, 160)}`);
     });
-    for (const [address, seenAt] of this.geckoCache) {
-      if (Date.now() - seenAt > GECKO_CACHE_MS) this.geckoCache.delete(address);
-      else if (!SOL_MINTS.has(address)) found.add(address);
+    for (const [key, seenAt] of this.geckoCache) {
+      if (Date.now() - seenAt > GECKO_CACHE_MS) {
+        this.geckoCache.delete(key);
+        continue;
+      }
+      const sep = key.indexOf(':');
+      add(key.slice(0, sep), key.slice(sep + 1));
     }
-    return [...found];
+    return found;
   }
 
   private async geckoPools(url: string): Promise<string[]> {
@@ -179,26 +204,34 @@ export class MarketScanner extends EventEmitter {
       url,
       { headers: { accept: 'application/json' } },
     );
-    // Token ids look like "solana_<mint>".
+    // Token ids look like "<network>_<address>", e.g. "solana_<mint>".
     return (body.data ?? [])
       .map((pool) => pool.relationships?.base_token?.data?.id ?? '')
-      .filter((id) => id.startsWith('solana_'))
-      .map((id) => id.slice('solana_'.length));
+      .filter((id) => id.includes('_'))
+      .map((id) => id.slice(id.indexOf('_') + 1));
   }
 
-  private async dexList(url: string): Promise<string[]> {
+  private async dexList(url: string, add: (chainId: string, address: string) => void): Promise<void> {
     const body = await fetchJson<Array<{ chainId?: string; tokenAddress?: string }>>(url);
-    return (Array.isArray(body) ? body : [])
-      .filter((t) => t.chainId === 'solana' && t.tokenAddress)
-      .map((t) => t.tokenAddress as string);
+    const rows = Array.isArray(body) ? body : [];
+    if (!this.loggedChains && rows.length > 0) {
+      // Shows the exact DexScreener chain ids in use, to configure new chains.
+      this.loggedChains = true;
+      const ids = [...new Set(rows.map((t) => t.chainId).filter(Boolean))].sort();
+      log.info(`DexScreener chain ids seen in latest listings: ${ids.join(', ')}`);
+    }
+    for (const t of rows) {
+      if (t.chainId && t.tokenAddress) add(t.chainId, t.tokenAddress);
+    }
   }
 
-  /** The most liquid Solana pair per base token. */
-  private bestPairs(pairs: DexPair[]): Map<string, DexPair> {
+  /** The most liquid pair per base token on one chain. */
+  private bestPairs(pairs: DexPair[], chainId: string): Map<string, DexPair> {
     const best = new Map<string, DexPair>();
     for (const pair of pairs) {
       const mint = pair.baseToken?.address;
-      if (pair.chainId !== 'solana' || !mint || SOL_MINTS.has(mint)) continue;
+      if (pair.chainId !== chainId || !mint || SOL_MINTS.has(mint)) continue;
+      if (BASE_ASSET_SYMBOLS.has((pair.baseToken?.symbol ?? '').toUpperCase())) continue;
       const current = best.get(mint);
       if (!current || (pair.liquidity?.usd ?? 0) > (current.liquidity?.usd ?? 0)) best.set(mint, pair);
     }
@@ -237,9 +270,10 @@ export class MarketScanner extends EventEmitter {
   }
 }
 
-export function toMetrics(pair: DexPair): ScanMetrics {
+export function toMetrics(pair: DexPair, chain = 'solana'): ScanMetrics {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
   return {
+    chain,
     pairAddress: pair.pairAddress ?? '',
     dexId: pair.dexId ?? '?',
     priceUsd: num(pair.priceUsd),

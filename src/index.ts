@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   }
   const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
   const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
-  const safety = new SafetyChecker(rpc, config.filters);
+  const safety = new SafetyChecker(rpc, config.filters, config.scanner.chains);
 
   // Paper positions live in their own file so they never mix with real ones.
   const store = new PositionStore(live ? 'positions.json' : 'paper-positions.json');
@@ -293,7 +293,12 @@ async function main(): Promise<void> {
       void record('reject', `prefilter rejected: ${rejected}`);
       return;
     }
-    log.info(`${candidate.symbol} (${short(candidate.mint)}) pumping: ${summary}`);
+    if (live && candidate.chain && candidate.chain !== 'solana') {
+      // Execution exists only for Solana; other chains are measured in paper.
+      void record('reject', `live trading not supported on ${candidate.chain}`);
+      return;
+    }
+    log.info(`[${candidate.chain ?? 'solana'}] ${candidate.symbol} (${short(candidate.mint)}) pumping: ${summary}`);
     void enterPosition(candidate, `scanner: ${summary}`, record).catch((err) =>
       log.error(`scanner entry error for ${candidate.symbol}: ${(err as Error).message}`),
     );

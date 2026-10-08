@@ -41,7 +41,7 @@ interface OutcomeRow {
   maxDrawdownPct: number;
   finalChangePct: number;
 }
-interface CloseRow { type: string; reason: string; pnlSol: number; pnlPct?: number; solSpent: number }
+interface CloseRow { type: string; reason: string; pnlSol: number; pnlPct?: number; solSpent: number; chain?: string }
 
 function section(title: string): void {
   console.log(`\n=== ${title} ===`);
@@ -129,6 +129,21 @@ for (const [label, file] of [['Paper trades', 'logs/paper-trades.jsonl'], ['Live
   for (const [reason, rows] of byReason) {
     const sum = rows.reduce((s, r) => s + r.pnlSol, 0);
     console.log(`  ${reason.padEnd(14)} n=${String(rows.length).padStart(4)}  PnL ${num(sum, 4)} SOL`);
+  }
+  // Which chain the strategy works on: compare % returns, not SOL totals.
+  const byChain = new Map<string, CloseRow[]>();
+  for (const c of closes) byChain.set(c.chain ?? 'solana', [...(byChain.get(c.chain ?? 'solana') ?? []), c]);
+  if (byChain.size > 1 || !byChain.has('solana')) {
+    console.log('by chain:');
+    for (const [chain, rows] of [...byChain].sort((a, b) => b[1].length - a[1].length)) {
+      const chainWins = rows.filter((r) => r.pnlSol > 0).length;
+      const chainSpent = rows.reduce((s, r) => s + r.solSpent, 0);
+      const chainPnl = rows.reduce((s, r) => s + r.pnlSol, 0);
+      console.log(
+        `  ${chain.padEnd(10)} n=${String(rows.length).padStart(4)}  win ${pct(chainWins, rows.length).padStart(6)}  ` +
+        `return ${pct(chainPnl, chainSpent).padStart(7)}  best ${num(Math.max(...rows.map((r) => r.pnlPct ?? 0)))}%`,
+      );
+    }
   }
 }
 

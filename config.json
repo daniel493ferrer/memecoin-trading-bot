@@ -12,6 +12,31 @@
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
+    "chains": [
+      {
+        "name": "solana",
+        "dexscreener": "solana",
+        "gecko": "solana"
+      },
+      {
+        "name": "base",
+        "dexscreener": "base",
+        "gecko": "base",
+        "goplusChainId": "8453"
+      },
+      {
+        "name": "bsc",
+        "dexscreener": "bsc",
+        "gecko": "bsc",
+        "goplusChainId": "56"
+      },
+      {
+        "name": "robinhood",
+        "dexscreener": "robinhood",
+        "gecko": "robinhood",
+        "goplusChainId": "4663"
+      }
+    ],
     "minLiquidityUsd": 20000,
     "minAgeMinutes": 20,
     "maxAgeHours": 0,

@@ -16,6 +16,8 @@ export interface TokenCandidate {
   devBuySol?: number;
   /** Initial SOL-side liquidity (Raydium pools only). */
   initialLiquiditySol?: number;
+  /** Scanner chain name ("solana" when absent). */
+  chain?: string;
   discoveredAt: number;
 }
 
@@ -60,6 +62,8 @@ export interface Position {
   closedAt?: number;
   status: PositionStatus;
   exitReason?: ExitReason;
+  /** Chain name for scanner positions; absent means Solana. */
+  chain?: string;
   buySignature: string;
 }
 

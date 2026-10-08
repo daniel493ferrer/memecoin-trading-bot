@@ -25,6 +25,19 @@ export const ConfigSchema = z.object({
   scanner: z.object({
     enabled: z.boolean().default(false),
     intervalSeconds: z.number().int().min(10).default(20),
+    /**
+     * Chains to scan. Only Solana can trade live; other chains run in paper
+     * mode to measure where the strategy works before building execution.
+     */
+    chains: z.array(z.object({
+      name: z.string().min(1),
+      /** DexScreener chain id, e.g. "solana", "base", "bsc". */
+      dexscreener: z.string().min(1),
+      /** GeckoTerminal network id; omit to skip GeckoTerminal for this chain. */
+      gecko: z.string().optional(),
+      /** GoPlus numeric chain id for honeypot/tax checks on EVM chains. */
+      goplusChainId: z.string().optional(),
+    })).min(1).default([{ name: 'solana', dexscreener: 'solana', gecko: 'solana' }]),
     minPriceChange5mPct: z.number().default(30),
     /** 0 disables. Above this the 5m move is a spike: buying it buys the top. */
     maxPriceChange5mPct: z.number().min(0).default(0),

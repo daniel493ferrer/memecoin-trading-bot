@@ -29,6 +29,7 @@ const PositionSchema = z.object({
     'dev-sell', 'migration', 'rugged', 'shutdown',
   ]).optional(),
   buySignature: z.string().min(1),
+  chain: z.string().optional(),
 });
 
 /**
