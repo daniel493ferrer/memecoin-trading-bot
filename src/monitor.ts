@@ -246,6 +246,11 @@ export class ExitMonitor {
     }
   }
 
+  /** Full exit requested from outside the rule engine (e.g. a copied leader sold). */
+  async exitNow(position: Position, reason: ExitReason): Promise<void> {
+    return this.exit(position, reason);
+  }
+
   /** Full exit — sells 100% and closes the position. */
   private async exit(position: Position, reason: ExitReason): Promise<void> {
     if (this.selling.has(position.id)) return;

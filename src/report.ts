@@ -41,7 +41,7 @@ interface OutcomeRow {
   maxDrawdownPct: number;
   finalChangePct: number;
 }
-interface CloseRow { type: string; reason: string; pnlSol: number; pnlPct?: number; solSpent: number; chain?: string }
+interface CloseRow { type: string; reason: string; pnlSol: number; pnlPct?: number; solSpent: number; chain?: string; leader?: string }
 
 function section(title: string): void {
   console.log(`\n=== ${title} ===`);
@@ -129,6 +129,21 @@ for (const [label, file] of [['Paper trades', 'logs/paper-trades.jsonl'], ['Live
   for (const [reason, rows] of byReason) {
     const sum = rows.reduce((s, r) => s + r.pnlSol, 0);
     console.log(`  ${reason.padEnd(14)} n=${String(rows.length).padStart(4)}  PnL ${num(sum, 4)} SOL`);
+  }
+  // Copy trading: keep the leaders that make money, drop the rest.
+  const byLeader = new Map<string, CloseRow[]>();
+  for (const c of closes) if (c.leader) byLeader.set(c.leader, [...(byLeader.get(c.leader) ?? []), c]);
+  if (byLeader.size > 0) {
+    console.log('by copied wallet:');
+    for (const [leader, rows] of [...byLeader].sort((a, b) => b[1].length - a[1].length)) {
+      const lWins = rows.filter((r) => r.pnlSol > 0).length;
+      const lSpent = rows.reduce((s, r) => s + r.solSpent, 0);
+      const lPnl = rows.reduce((s, r) => s + r.pnlSol, 0);
+      console.log(
+        `  ${leader.slice(0, 4)}..${leader.slice(-4)}  n=${String(rows.length).padStart(4)}  ` +
+        `win ${pct(lWins, rows.length).padStart(6)}  return ${pct(lPnl, lSpent).padStart(7)}`,
+      );
+    }
   }
   // Which chain the strategy works on: compare % returns, not SOL totals.
   const byChain = new Map<string, CloseRow[]>();

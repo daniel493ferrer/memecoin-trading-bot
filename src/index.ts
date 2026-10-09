@@ -7,6 +7,7 @@ import { JupiterEngine } from './swap/jupiter.js';
 import { PumpFunStream } from './discovery/pumpfun.js';
 import { RaydiumListener } from './discovery/raydium.js';
 import { MarketScanner, type ScanMetrics } from './discovery/scanner.js';
+import { CopyTrader, type LeaderTrade } from './discovery/copytrader.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -111,6 +112,7 @@ async function main(): Promise<void> {
   );
   const raydium = new RaydiumListener(rpc);
   const scanner = new MarketScanner(config.scanner);
+  const copier = new CopyTrader(rpc, config.copy);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
   const observer = new CandidateObserver(pumpStream, config.observation);
   const strategy = createStrategy(config.strategy.name);
@@ -277,6 +279,52 @@ async function main(): Promise<void> {
     }
   }
 
+  // ------------------------------------------------------------- copy trading
+
+  const copyLog = 'data/copy.jsonl';
+  copier.on('trade', (trade: LeaderTrade) => {
+    const row = { ts: new Date().toISOString(), ...trade };
+    if (trade.side === 'sell') {
+      // Follow the leader out of tokens we copied from them.
+      for (const position of store.open) {
+        if (position.mint !== trade.mint || position.leader !== trade.leader) continue;
+        if (trade.soldPct < config.copy.followSellPct) continue;
+        log.info(`copy: ${trade.label} sold ${trade.soldPct.toFixed(0)}% of ${position.symbol} — exiting too`);
+        void monitor.exitNow(position, 'copy-exit');
+      }
+      void appendJsonl(copyLog, { ...row, decision: 'leader-sell' });
+      return;
+    }
+
+    const record = (decision: 'buy' | 'reject', reason: string) => appendJsonl(copyLog, { ...row, decision, reason });
+    if (trade.sol < config.copy.minLeaderBuySol) {
+      void record('reject', `leader buy ${trade.sol.toFixed(3)} SOL below min ${config.copy.minLeaderBuySol}`);
+      return;
+    }
+    if (trade.delaySeconds > config.copy.maxDelaySeconds) {
+      void record('reject', `seen ${trade.delaySeconds.toFixed(0)}s late`);
+      return;
+    }
+    if (store.hasMint(trade.mint)) {
+      void record('reject', 'already holding this token');
+      return;
+    }
+    const candidate: TokenCandidate = {
+      mint: trade.mint,
+      symbol: short(trade.mint),
+      name: 'copy',
+      source: 'copy',
+      venue: 'amm',
+      chain: 'solana',
+      leader: trade.leader,
+      discoveredAt: Date.now(),
+    };
+    log.info(`copy: ${trade.label} bought ${short(trade.mint)} for ${fmtSol(trade.sol)} (${trade.delaySeconds.toFixed(1)}s ago)`);
+    void enterPosition(candidate, `copy ${trade.label}: leader bought ${fmtSol(trade.sol)}`, record).catch((err) =>
+      log.error(`copy entry error for ${short(trade.mint)}: ${(err as Error).message}`),
+    );
+  });
+
   // ------------------------------------------------------------ market scanner
 
   const scannerLog = 'data/scanner.jsonl';
@@ -351,6 +399,13 @@ async function main(): Promise<void> {
   if (config.scanner.enabled) {
     scanner.start();
   }
+  if (config.copy.enabled) {
+    if (config.copy.wallets.length === 0) {
+      log.warn('copy trading is enabled but copy.wallets is empty — add leader wallets to config.json');
+    } else {
+      copier.start();
+    }
+  }
   monitor.start();
 
   log.ok(
@@ -385,6 +440,7 @@ async function main(): Promise<void> {
     log.info('shutting down — open positions are saved and will resume on restart');
     monitor.stop();
     scanner.stop();
+    await copier.stop();
     pumpStream.stop();
     await raydium.stop();
     store.save();

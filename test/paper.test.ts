@@ -448,3 +448,29 @@ test('pullback mode buys the bounce of a runner, not spikes or dumps', async () 
   assert.match(scanner.rejectReason(metrics(300, -25, -3))!, /no bounce/);
   assert.match(scanner.rejectReason(metrics(30, -25, 8))!, /6h run/);
 });
+
+test('copy trading reads a leader buy and sell from a parsed transaction', async () => {
+  const { parseLeaderSwap } = await import('../src/discovery/copytrader.js');
+  const { PublicKey } = await import('@solana/web3.js');
+  const LEADER = 'H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG';
+  const MINT = 'MemeMint111111111111111111111111111111pump';
+  const tx = (solPre: number, solPost: number, tokPre: number, tokPost: number) => ({
+    transaction: { message: { accountKeys: [{ pubkey: new PublicKey(LEADER) }] } },
+    meta: {
+      preBalances: [solPre * 1e9], postBalances: [solPost * 1e9],
+      preTokenBalances: tokPre ? [{ owner: LEADER, mint: MINT, uiTokenAmount: { uiAmount: tokPre } }] : [],
+      postTokenBalances: tokPost ? [{ owner: LEADER, mint: MINT, uiTokenAmount: { uiAmount: tokPost } }] : [],
+    },
+  }) as never;
+  const buys = parseLeaderSwap(tx(10, 8.99, 0, 5_000_000), LEADER);
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].side, 'buy');
+  assert.equal(buys[0].mint, MINT);
+  assert.ok(Math.abs(buys[0].sol - 1.01) < 1e-9);
+  const sell = parseLeaderSwap(tx(9, 11, 5_000_000, 1_000_000), LEADER)[0];
+  assert.equal(sell.side, 'sell');
+  assert.ok(Math.abs(sell.soldPct - 80) < 1e-9);
+  assert.ok(Math.abs(sell.sol - 2) < 1e-9);
+  // A plain SOL transfer with no token change is not a trade.
+  assert.deepEqual(parseLeaderSwap(tx(10, 9, 0, 0), LEADER), []);
+});

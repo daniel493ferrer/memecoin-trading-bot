@@ -9,6 +9,13 @@
       "enabled": false
     }
   },
+  "copy": {
+    "enabled": true,
+    "wallets": [],
+    "minLeaderBuySol": 0.3,
+    "followSellPct": 50,
+    "maxDelaySeconds": 20
+  },
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,

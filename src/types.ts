@@ -1,7 +1,7 @@
 /** Where a token currently trades. Determines which execution engine we use. */
 export type Venue = 'pump' | 'amm';
 
-export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium' | 'scanner';
+export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium' | 'scanner' | 'copy';
 
 /** A freshly discovered token that passed (or is about to pass) filtering. */
 export interface TokenCandidate {
@@ -18,6 +18,8 @@ export interface TokenCandidate {
   initialLiquiditySol?: number;
   /** Scanner chain name ("solana" when absent). */
   chain?: string;
+  /** Leader wallet being copied (copy trading only). */
+  leader?: string;
   discoveredAt: number;
 }
 
@@ -31,6 +33,7 @@ export type ExitReason =
   | 'dev-sell'
   | 'migration'
   | 'rugged'
+  | 'copy-exit'
   | 'shutdown';
 
 export interface Position {
@@ -64,6 +67,8 @@ export interface Position {
   exitReason?: ExitReason;
   /** Chain name for scanner positions; absent means Solana. */
   chain?: string;
+  /** Leader wallet this position copies (copy trading only). */
+  leader?: string;
   buySignature: string;
 }
 

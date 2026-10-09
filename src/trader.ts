@@ -92,6 +92,7 @@ export class Trader {
       status: 'open',
       buySignature: fill.signature,
       chain: candidate.chain,
+      leader: candidate.leader,
     };
     this.store.add(position);
 
@@ -182,6 +183,7 @@ export class Trader {
       type: 'close',
       mode: this.mode,
       chain: position.chain ?? 'solana',
+      leader: position.leader,
       mint: position.mint,
       symbol: position.symbol,
       source: position.source,
@@ -386,13 +388,21 @@ export class Trader {
       const tokensUi = curveBuyTokens(curve, amountSol, feePct) * (1 - extraSlippagePct / 100);
       tokensRaw = BigInt(Math.floor(tokensUi * 10 ** decimals));
     } else {
-      const quote = await this.jupiter.quote(
-        WSOL_MINT,
-        candidate.mint,
-        BigInt(solToLamports(amountSol)),
-        this.config.entry.slippageBps,
-      );
-      tokensRaw = (BigInt(quote.outAmount) * BigInt(Math.round((100 - extraSlippagePct) * 100))) / 10_000n;
+      try {
+        const quote = await this.jupiter.quote(
+          WSOL_MINT,
+          candidate.mint,
+          BigInt(solToLamports(amountSol)),
+          this.config.entry.slippageBps,
+        );
+        tokensRaw = (BigInt(quote.outAmount) * BigInt(Math.round((100 - extraSlippagePct) * 100))) / 10_000n;
+      } catch (err) {
+        // Same fallback as paper sells: the pool price, minus fee and slippage.
+        const dex = await dexPriceSol(candidate.mint);
+        if (!dex) throw err;
+        const tokensUi = (amountSol * (1 - feePct / 100) * (1 - extraSlippagePct / 100)) / dex.priceSol;
+        tokensRaw = BigInt(Math.floor(tokensUi * 10 ** decimals));
+      }
     }
     if (tokensRaw <= 0n) throw new Error('simulated fill returned no tokens');
 

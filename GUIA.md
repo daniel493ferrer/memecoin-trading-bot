@@ -33,6 +33,32 @@ El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 **0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
 
+## Copy trading (copiar wallets que ganan)
+
+El bot vigila wallets de traders con buen historial y **copia sus compras al
+instante** (en modo prueba primero). Cuando el líder vende la mitad o más,
+el bot también vende. Los stops normales siguen activos por si el líder no vende.
+
+**Cómo elegir wallets (en gmgn.ai → Solana → "Smart Money" / leaderboard):**
+- ganancia positiva en **30 días**, no solo en 7 (descarta suerte),
+- **win rate de 40 % o más**,
+- **menos de ~50 operaciones al día** (más que eso suele ser un bot muy rápido
+  que vende antes de que puedas copiarlo),
+- tiempo medio de tenencia de **varios minutos u horas**, no segundos,
+- compras de **0.3 SOL o más** (si compra migajas, no lo copies).
+
+**Dónde ponerlas:** `config.json` → `copy.wallets`:
+
+```json
+"wallets": [
+  { "address": "DIRECCION_DE_LA_WALLET", "label": "ballena1" },
+  { "address": "OTRA_DIRECCION", "label": "trader2" }
+]
+```
+
+`npm run report` muestra **"by copied wallet"**: cuánto gana cada wallet
+copiada. Quita las que pierdan y deja las que ganen.
+
 ## Varias redes
 
 - **Solana** opera en modo prueba y en modo real.

@@ -21,6 +21,20 @@ export const ConfigSchema = z.object({
       enabled: z.boolean(),
     }),
   }),
+  /** Copy trading: mirror buys and sells of proven Solana wallets. */
+  copy: z.object({
+    enabled: z.boolean().default(false),
+    wallets: z.array(z.object({
+      address: z.string().min(32),
+      label: z.string().optional(),
+    })).default([]),
+    /** Ignore leader buys smaller than this (tests, dust, fee-farming). */
+    minLeaderBuySol: z.number().min(0).default(0.3),
+    /** Sell when a leader sells at least this share of their position. */
+    followSellPct: z.number().gt(0).max(100).default(50),
+    /** Skip a leader buy if we would enter more than this many seconds late. */
+    maxDelaySeconds: z.number().min(1).default(20),
+  }).default({}),
   /** Market scanner: buys tokens that are pumping now, at any age. */
   scanner: z.object({
     enabled: z.boolean().default(false),

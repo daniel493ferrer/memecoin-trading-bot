@@ -8,7 +8,7 @@ const PositionSchema = z.object({
   id: z.string().min(1),
   mint: z.string().min(1),
   symbol: z.string(),
-  source: z.enum(['pumpfun', 'pumpfun-migration', 'raydium', 'scanner']),
+  source: z.enum(['pumpfun', 'pumpfun-migration', 'raydium', 'scanner', 'copy']),
   venue: z.enum(['pump', 'amm']),
   wallet: z.string().min(1),
   creator: z.string().optional(),
@@ -26,10 +26,11 @@ const PositionSchema = z.object({
   status: z.enum(['open', 'closed']),
   exitReason: z.enum([
     'take-profit', 'stop-loss', 'trailing-stop', 'max-hold',
-    'dev-sell', 'migration', 'rugged', 'shutdown',
+    'dev-sell', 'migration', 'rugged', 'copy-exit', 'shutdown',
   ]).optional(),
   buySignature: z.string().min(1),
   chain: z.string().optional(),
+  leader: z.string().optional(),
 });
 
 /**
