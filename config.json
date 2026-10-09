@@ -18,6 +18,12 @@
     "minLeadersAgree": 2,
     "consensusWindowSeconds": 300
   },
+  "influencers": {
+    "enabled": true,
+    "channels": [],
+    "requireWalletVote": true,
+    "sessionFile": "data/telegram.session"
+  },
   "hunter": {
     "enabled": true,
     "minRun6hPct": 300,

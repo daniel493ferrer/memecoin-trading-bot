@@ -10,7 +10,8 @@ import { MarketScanner, type ScanMetrics } from './discovery/scanner.js';
 import { CopyTrader, type LeaderTrade } from './discovery/copytrader.js';
 import { WalletHunter } from './discovery/wallethunter.js';
 import { LeaderBook } from './leaders.js';
-import { ClusterTracker } from './consensus.js';
+import { ClusterTracker, TELEGRAM_VOTER, clusterDecision } from './consensus.js';
+import { TelegramWatcher, type Mention } from './discovery/telegram.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -299,6 +300,11 @@ async function main(): Promise<void> {
 
   const copyLog = 'data/copy.jsonl';
   const clusters = new ClusterTracker(config.copy.consensusWindowSeconds * 1_000);
+  const telegram = new TelegramWatcher(
+    config.influencers,
+    Number(process.env.TELEGRAM_API_ID),
+    process.env.TELEGRAM_API_HASH?.trim() ?? '',
+  );
   copier.on('trade', (trade: LeaderTrade) => {
     const row = { ts: new Date().toISOString(), ...trade };
     if (trade.side === 'sell') {
@@ -322,33 +328,62 @@ async function main(): Promise<void> {
       void record('reject', `seen ${trade.delaySeconds.toFixed(0)}s late`);
       return;
     }
-    if (store.hasMint(trade.mint)) {
+    log.info(`copy: ${trade.label} bought ${short(trade.mint)} for ${fmtSol(trade.sol)} (${trade.delaySeconds.toFixed(1)}s ago)`);
+    clusterVote(trade.mint, trade.leader, record);
+  });
+
+  /**
+   * One consensus vote for `mint` from a leader wallet or an influencer
+   * channel (TELEGRAM_VOTER prefix). Buys once enough distinct sources agree
+   * and, by default, at least one of them is a wallet actually buying.
+   */
+  function clusterVote(
+    mint: string,
+    voter: string,
+    record: (decision: 'buy' | 'reject', reason: string) => Promise<void>,
+  ): void {
+    if (store.hasMint(mint)) {
       void record('reject', 'already holding this token');
       return;
     }
-    const agreeing = clusters.add(trade.mint, trade.leader);
-    if (agreeing.length < config.copy.minLeadersAgree) {
-      void record('reject', `waiting for consensus (${agreeing.length}/${config.copy.minLeadersAgree} leaders)`);
-      log.info(`copy: ${trade.label} bought ${short(trade.mint)} — ${agreeing.length}/${config.copy.minLeadersAgree} leaders agree, waiting`);
+    const voters = clusters.add(mint, voter);
+    const minVotes = config.copy.minLeadersAgree;
+    const requireWalletVote = !config.influencers.enabled || config.influencers.requireWalletVote;
+    const decision = clusterDecision(voters, { minVotes, requireWalletVote });
+    const tally = `${decision.wallets.length} wallet(s)` +
+      (decision.channels.length ? ` + ${decision.channels.length} channel(s)` : '');
+    if (!decision.buy) {
+      void record('reject', `waiting for consensus (${tally}, need ${minVotes}${requireWalletVote ? ' incl. a wallet' : ''})`);
+      log.info(`signal ${short(mint)}: ${tally} — waiting for ${minVotes}`);
       return;
     }
     const candidate: TokenCandidate = {
-      mint: trade.mint,
-      symbol: short(trade.mint),
+      mint,
+      symbol: short(mint),
       name: 'copy',
       source: 'copy',
       venue: 'amm',
       chain: 'solana',
-      leader: trade.leader,
+      leader: decision.wallets[0],
       discoveredAt: Date.now(),
     };
-    log.info(`copy: ${trade.label} bought ${short(trade.mint)} for ${fmtSol(trade.sol)} (${trade.delaySeconds.toFixed(1)}s ago)`);
-    const why = config.copy.minLeadersAgree > 1
-      ? `cluster: ${agreeing.length} leaders bought within ${config.copy.consensusWindowSeconds}s`
-      : `copy ${trade.label}: leader bought ${fmtSol(trade.sol)}`;
+    const why = voters.length > 1
+      ? `cluster within ${config.copy.consensusWindowSeconds}s: ${tally}` +
+        (decision.channels.length ? ` [${decision.channels.join(', ')}]` : '')
+      : `copy ${short(voter)}`;
     void enterPosition(candidate, why, record).catch((err) =>
-      log.error(`copy entry error for ${short(trade.mint)}: ${(err as Error).message}`),
+      log.error(`signal entry error for ${short(mint)}: ${(err as Error).message}`),
     );
+  }
+
+  // --------------------------------------------------------- influencers
+
+  telegram.on('mention', (mention: Mention) => {
+    log.info(`influencers: ${mention.channel} posted ${short(mention.mint)}`);
+    const record = (decision: 'buy' | 'reject', reason: string) => appendJsonl('data/influencers.jsonl', {
+      ts: new Date().toISOString(), mint: mention.mint, channel: mention.channel, decision, reason,
+    });
+    clusterVote(mention.mint, `${TELEGRAM_VOTER}${mention.channel}`, record);
   });
 
   // ------------------------------------------------------------ wallet hunter
@@ -438,6 +473,15 @@ async function main(): Promise<void> {
     copier.start();
     // Leaders found by the hunter in earlier runs.
     for (const r of leaders.active) copier.addLeader(r.address, `auto-${r.address.slice(0, 4)}`);
+    if (config.influencers.enabled) {
+      if (!Number(process.env.TELEGRAM_API_ID) || !process.env.TELEGRAM_API_HASH) {
+        log.warn('influencers: add TELEGRAM_API_ID and TELEGRAM_API_HASH to .env to read Telegram channels');
+      } else if (config.influencers.channels.length === 0) {
+        log.warn('influencers: no channels in config.json (influencers.channels)');
+      } else {
+        await telegram.start().catch((err) => log.error(`influencers: Telegram failed: ${(err as Error).message}`));
+      }
+    }
     log.ok(`copy trading: ${copier.watchedCount} leader wallet(s) in total` +
       (config.hunter.enabled ? ' — the hunter adds more as it finds them' : ''));
   }
@@ -476,6 +520,7 @@ async function main(): Promise<void> {
     monitor.stop();
     scanner.stop();
     await copier.stop();
+    await telegram.stop();
     pumpStream.stop();
     await raydium.stop();
     store.save();

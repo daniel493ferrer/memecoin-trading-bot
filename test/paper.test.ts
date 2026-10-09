@@ -600,3 +600,24 @@ test('cluster signal needs distinct leaders inside the window', async () => {
   assert.deepEqual(t.add('M', 'C', 400_000), ['C'], 'old buys fall out of the window');
   assert.deepEqual(t.add('OTHER', 'A', 400_000), ['A'], 'tokens are tracked separately');
 });
+
+test('influencer posts: token addresses are extracted from text and links', async () => {
+  const { extractSolanaMints } = await import('../src/discovery/telegram.js');
+  const MINT = 'H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG';
+  const text = `🚀 NEW CALL $FROG\nCA: ${MINT}\nhttps://pump.fun/coin/${MINT}\n` +
+    'pair https://dexscreener.com/solana/So11111111111111111111111111111111111111112 lol';
+  assert.deepEqual(extractSolanaMints(text), [MINT]);
+  assert.deepEqual(extractSolanaMints('no addresses here, just hype 1000x'), []);
+});
+
+test('consensus: a call alone never buys, a call plus a wallet does', async () => {
+  const { clusterDecision } = await import('../src/consensus.js');
+  const opts = { minVotes: 2, requireWalletVote: true };
+  assert.equal(clusterDecision(['tg:alpha', 'tg:beta'], opts).buy, false, 'two channels, no wallet');
+  assert.equal(clusterDecision(['tg:alpha', 'WalletA'], opts).buy, true);
+  assert.equal(clusterDecision(['WalletA', 'WalletB'], opts).buy, true);
+  assert.equal(clusterDecision(['WalletA'], opts).buy, false);
+  const d = clusterDecision(['tg:alpha', 'WalletA'], opts);
+  assert.deepEqual([d.wallets, d.channels], [['WalletA'], ['alpha']]);
+  assert.equal(clusterDecision(['tg:alpha', 'tg:beta'], { minVotes: 2, requireWalletVote: false }).buy, true);
+});

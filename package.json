@@ -11,7 +11,8 @@
     "report": "tsx src/report.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test",
-    "reset-paper": "tsx src/reset-paper.ts"
+    "reset-paper": "tsx src/reset-paper.ts",
+    "telegram-login": "tsx src/telegram-login.ts"
   },
   "keywords": [
     "solana",
@@ -36,6 +37,7 @@
     "@solana/web3.js": "^1.98.0",
     "bs58": "^6.0.0",
     "dotenv": "^16.4.7",
+    "teleproto": "^1.230.0",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },

@@ -42,6 +42,18 @@ export const ConfigSchema = z.object({
     minLeadersAgree: z.number().int().min(1).default(1),
     consensusWindowSeconds: z.number().int().min(10).default(300),
   }).default({}),
+  /** Influencer signals: token addresses posted in Telegram channels. */
+  influencers: z.object({
+    enabled: z.boolean().default(false),
+    /** Channel usernames (e.g. "somecallschannel") or invite links you joined. */
+    channels: z.array(z.string().min(1)).default([]),
+    /**
+     * A mention counts as one consensus vote; require at least one leader
+     * wallet buying too, so the bot never buys on a call alone.
+     */
+    requireWalletVote: z.boolean().default(true),
+    sessionFile: z.string().default('data/telegram.session'),
+  }).default({}),
   /** Finds copy-trading leaders automatically from on-chain data. */
   hunter: z.object({
     enabled: z.boolean().default(false),

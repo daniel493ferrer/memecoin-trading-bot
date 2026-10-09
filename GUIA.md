@@ -63,6 +63,34 @@ alcanza.
 Si quieres añadir wallets a mano además de las automáticas: `config.json` →
 `copy.wallets` con `{ "address": "...", "label": "nombre" }`.
 
+## Señales de influencers (Telegram)
+
+El bot puede leer **canales de Telegram de "calls"** con tu propia cuenta y
+contar cada token que publiquen como **un voto** en el consenso.
+
+- **Nunca compra solo porque un influencer lo diga**: necesita además al menos
+  **una wallet líder comprándolo** en los mismos 5 minutos
+  (`influencers.requireWalletVote`). Comprar solo por el aviso pierde de media,
+  porque el influencer y su grupo compraron antes.
+- Ejemplo: canal publica el token + una wallet líder lo compra = **compra**.
+
+**Cómo activarlo (una sola vez):**
+1. Entra en https://my.telegram.org → "API development tools" → crea una app.
+   Copia el `api_id` y el `api_hash`.
+2. Añádelos a tu `.env`:
+   ```
+   TELEGRAM_API_ID=123456
+   TELEGRAM_API_HASH=abcdef...
+   ```
+3. Inicia sesión: `npm run telegram-login` (te pide tu número y el código que
+   te manda Telegram). Se guarda en `data/telegram.session`. **No lo compartas**:
+   da acceso a tu Telegram.
+4. Pon los canales en `config.json` → `influencers.channels`, por ejemplo
+   `["nombredelcanal", "otrocanal"]` (el nombre que sale en t.me/nombredelcanal).
+5. `npm start`. Verás `influencers: canal posted ...` cada vez que publiquen.
+
+Todo lo que publican queda en `data/influencers.jsonl`.
+
 ## Varias redes
 
 - **Solana** opera en modo prueba y en modo real.
