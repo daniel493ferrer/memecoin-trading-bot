@@ -11,12 +11,24 @@ import { short, sleep } from './utils.js';
 export class Rpc {
   readonly connection: Connection;
 
-  constructor(heliusApiKey: string) {
+  constructor(heliusApiKey: string, maxRequestsPerSecond = 8) {
     const httpUrl = `https://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`;
     const wsUrl = `wss://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`;
+    // Space HTTP requests evenly so the plan's rate limit (free: 10/s) is
+    // never hit; bursts would otherwise come back as 429 retries.
+    const spacingMs = 1_000 / maxRequestsPerSecond;
+    let nextSlot = 0;
+    const throttledFetch: typeof fetch = async (input, init) => {
+      const now = Date.now();
+      const wait = Math.max(0, nextSlot - now);
+      nextSlot = Math.max(now, nextSlot) + spacingMs;
+      if (wait > 0) await sleep(wait);
+      return fetch(input, init);
+    };
     this.connection = new Connection(httpUrl, {
       commitment: 'confirmed',
       wsEndpoint: wsUrl,
+      fetch: throttledFetch as never,
     });
   }
 

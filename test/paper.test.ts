@@ -565,11 +565,28 @@ test('wallet hunter promotes a wallet that bought early in two winners', async (
     const hunter = new WalletHunter(rpc, { ...config.hunter, sampleSize: 50, maxPages: 2 }, book, (a) => promoted.push(a));
     hunter.consider('MintA', POOLS.MintA, 'A');
     hunter.consider('MintB', POOLS.MintB, 'B');
-    for (let i = 0; i < 100 && promoted.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 400 && promoted.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
     // Current price A = 5/1000; SMART paid 1/1000 (5x). B = 6/1000; SMART paid ~1.1/1000 (5.4x).
     // The first buyer in each pool sits in the first slots and is skipped as a sniper.
     assert.deepEqual(promoted, [SMART]);
   } finally {
     process.chdir(cwd);
+  }
+});
+
+test('RPC calls are spaced to respect the provider rate limit', async () => {
+  const realFetch = globalThis.fetch;
+  const times: number[] = [];
+  globalThis.fetch = (async () => {
+    times.push(Date.now());
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: '1', result: 1 }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const rpc = new Rpc('test-key', 10); // 100 ms apart
+    await Promise.all(Array.from({ length: 5 }, () => rpc.connection.getSlot()));
+    assert.equal(times.length, 5);
+    assert.ok(times[4] - times[0] >= 380, `5 calls at 10/s should span ~400ms, took ${times[4] - times[0]}ms`);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

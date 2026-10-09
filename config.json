@@ -21,8 +21,8 @@
     "minRun6hPct": 300,
     "minLiquidityUsd": 30000,
     "minMultiple": 3,
-    "sampleSize": 200,
-    "maxPages": 15,
+    "sampleSize": 120,
+    "maxPages": 8,
     "minHits": 2,
     "maxLeaders": 15,
     "pruneAfterTrades": 4
@@ -145,6 +145,9 @@
   },
   "risk": {
     "maxDailyLossSol": 0.25
+  },
+  "rpc": {
+    "maxRequestsPerSecond": 8
   },
   "paper": {
     "startingBalanceSol": 1,

@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const wallets = new WalletManager(config.wallets);
   if (live) wallets.load();
 
-  const rpc = new Rpc(env.heliusApiKey);
+  const rpc = new Rpc(env.heliusApiKey, config.rpc.maxRequestsPerSecond);
   try {
     await rpc.connection.getSlot();
   } catch (err) {

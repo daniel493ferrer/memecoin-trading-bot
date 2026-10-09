@@ -168,6 +168,10 @@ export const ConfigSchema = z.object({
     /** Stop opening positions for the rest of the UTC day after this realized loss. */
     maxDailyLossSol: z.number().gt(0).default(0.1),
   }).default({}),
+  rpc: z.object({
+    /** Helius HTTP requests per second (free plan allows 10). */
+    maxRequestsPerSecond: z.number().gt(0).default(8),
+  }).default({}),
   /** Dry-run (LIVE_TRADING=false) simulation settings. */
   paper: z.object({
     startingBalanceSol: z.number().gt(0).default(1),

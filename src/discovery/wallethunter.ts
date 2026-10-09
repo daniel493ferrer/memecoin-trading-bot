@@ -125,8 +125,10 @@ export class WalletHunter {
   /** Parse swaps of `mint` by each transaction's signer, a few at a time. */
   private async parse(sigs: Array<{ signature: string; slot: number }>, mint: string): Promise<SwapPoint[]> {
     const out: SwapPoint[] = [];
-    for (let i = 0; i < sigs.length; i += 5) {
-      const chunk = sigs.slice(i, i + 5);
+    // One request at a time: the shared RPC throttle then interleaves the
+    // hunter with trading calls instead of queueing a burst ahead of them.
+    for (let i = 0; i < sigs.length; i += 1) {
+      const chunk = sigs.slice(i, i + 1);
       const txs = await Promise.all(chunk.map((s) =>
         this.rpc.connection.getParsedTransaction(s.signature, {
           maxSupportedTransactionVersion: 0,
@@ -136,7 +138,7 @@ export class WalletHunter {
         const point = toSwapPoint(tx, mint, chunk[j].slot);
         if (point) out.push(point);
       });
-      await sleep(150); // stay well under free-tier RPC rate limits
+      await sleep(250); // leave most of the RPC budget to trading
     }
     return out;
   }
