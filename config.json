@@ -11,7 +11,16 @@
   },
   "copy": {
     "enabled": true,
-    "wallets": [],
+    "wallets": [
+      {
+        "address": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f",
+        "label": "kol-cupsey"
+      },
+      {
+        "address": "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o",
+        "label": "kol-cented"
+      }
+    ],
     "minLeaderBuySol": 0.3,
     "followSellPct": 50,
     "maxDelaySeconds": 20,
@@ -20,7 +29,11 @@
   },
   "influencers": {
     "enabled": true,
-    "channels": [],
+    "channels": [
+      "SolanaMemeCoinss",
+      "solana100xcall",
+      "SolanaMemeCryptoCoins"
+    ],
     "requireWalletVote": true,
     "sessionFile": "data/telegram.session"
   },

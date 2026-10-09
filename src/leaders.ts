@@ -48,6 +48,11 @@ export class LeaderBook {
       .sort((a, b) => b.copiedPnlSol - a.copiedPnlSol || b.hits.length - a.hits.length);
   }
 
+  /** True when copying this wallet was found to lose money. */
+  isDisabled(address: string): boolean {
+    return Boolean(this.records.get(address)?.disabled);
+  }
+
   get(address: string): LeaderRecord | undefined {
     return this.records.get(address);
   }
@@ -78,8 +83,12 @@ export class LeaderBook {
    * disabled because copying it loses money.
    */
   recordResult(address: string, pnlSol: number, spentSol: number): boolean {
-    const r = this.records.get(address);
-    if (!r) return false;
+    // Manually configured leaders get a record on their first copied trade.
+    const r = this.records.get(address) ?? {
+      address, hits: [], firstSeen: Date.now(),
+      copiedTrades: 0, copiedWins: 0, copiedPnlSol: 0, copiedSpentSol: 0,
+    };
+    this.records.set(address, r);
     r.copiedTrades++;
     if (pnlSol > 0) r.copiedWins++;
     r.copiedPnlSol += pnlSol;

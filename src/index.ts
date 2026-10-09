@@ -470,7 +470,7 @@ async function main(): Promise<void> {
     scanner.start();
   }
   if (config.copy.enabled) {
-    copier.start();
+    copier.start((address) => leaders.isDisabled(address));
     // Leaders found by the hunter in earlier runs.
     for (const r of leaders.active) copier.addLeader(r.address, `auto-${r.address.slice(0, 4)}`);
     if (config.influencers.enabled) {

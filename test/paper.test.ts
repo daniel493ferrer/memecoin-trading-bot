@@ -621,3 +621,19 @@ test('consensus: a call alone never buys, a call plus a wallet does', async () =
   assert.deepEqual([d.wallets, d.channels], [['WalletA'], ['alpha']]);
   assert.equal(clusterDecision(['tg:alpha', 'tg:beta'], { minVotes: 2, requireWalletVote: false }).buy, true);
 });
+
+test('manually configured leaders are dropped too when copying them loses', async () => {
+  const { LeaderBook } = await import('../src/leaders.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const book = new LeaderBook({ minHits: 2, maxLeaders: 15, pruneAfterTrades: 2 });
+    assert.equal(book.recordResult('Manual', -0.1, 0.25), false);
+    assert.equal(book.recordResult('Manual', -0.1, 0.25), true);
+    assert.equal(book.isDisabled('Manual'), true);
+    assert.equal(book.active.length, 0, 'a manual wallet is not promoted by its results');
+  } finally {
+    process.chdir(cwd);
+  }
+});

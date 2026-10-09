@@ -45,8 +45,14 @@ export class CopyTrader extends EventEmitter {
     super();
   }
 
-  start(): void {
-    for (const leader of this.cfg.wallets) this.addLeader(leader.address, leader.label);
+  start(skip: (address: string) => boolean = () => false): void {
+    for (const leader of this.cfg.wallets) {
+      if (skip(leader.address)) {
+        log.info(`copy: ${leader.label ?? short(leader.address)} skipped — copying it lost money before`);
+        continue;
+      }
+      this.addLeader(leader.address, leader.label);
+    }
     log.ok(`copy trading: watching ${this.subscriptions.size} configured leader wallet(s)`);
   }
 
