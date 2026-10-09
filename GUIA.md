@@ -44,8 +44,12 @@ El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 2. Si la **misma wallet** aparece comprando temprano en **2 ganadores distintos**,
    pasa a ser **líder** y el bot **copia sus compras** desde ese momento
    (máximo 15 líderes).
-3. Cuando el líder vende la mitad o más, el bot vende. Los stops normales siguen.
-4. Si después de **4 operaciones copiadas** una wallet da pérdida, **el bot la
+3. **Señal de consenso:** el bot **solo compra cuando 2 o más líderes compran el
+   mismo token en menos de 5 minutos** (`copy.minLeadersAgree`). Una sola wallet
+   puede ser suerte o una trampa; varias a la vez es una señal fuerte.
+   Pon `1` si quieres copiar cada compra de cada líder.
+4. Cuando el líder vende la mitad o más, el bot vende. Los stops normales siguen.
+5. Si después de **4 operaciones copiadas** una wallet da pérdida, **el bot la
    descarta solo**.
 
 En pantalla verás `hunter: ...` cuando analiza ganadores y `new leader` cuando

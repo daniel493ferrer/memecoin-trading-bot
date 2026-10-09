@@ -590,3 +590,13 @@ test('RPC calls are spaced to respect the provider rate limit', async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test('cluster signal needs distinct leaders inside the window', async () => {
+  const { ClusterTracker } = await import('../src/consensus.js');
+  const t = new ClusterTracker(300_000);
+  assert.deepEqual(t.add('M', 'A', 0), ['A']);
+  assert.deepEqual(t.add('M', 'A', 1_000), ['A'], 'the same leader twice is still one');
+  assert.deepEqual(t.add('M', 'B', 60_000).sort(), ['A', 'B']);
+  assert.deepEqual(t.add('M', 'C', 400_000), ['C'], 'old buys fall out of the window');
+  assert.deepEqual(t.add('OTHER', 'A', 400_000), ['A'], 'tokens are tracked separately');
+});

@@ -34,6 +34,13 @@ export const ConfigSchema = z.object({
     followSellPct: z.number().gt(0).max(100).default(50),
     /** Skip a leader buy if we would enter more than this many seconds late. */
     maxDelaySeconds: z.number().min(1).default(20),
+    /**
+     * Consensus ("cluster") signal: buy only once this many different leaders
+     * bought the same token within consensusWindowSeconds. 1 copies every
+     * leader buy on its own.
+     */
+    minLeadersAgree: z.number().int().min(1).default(1),
+    consensusWindowSeconds: z.number().int().min(10).default(300),
   }).default({}),
   /** Finds copy-trading leaders automatically from on-chain data. */
   hunter: z.object({

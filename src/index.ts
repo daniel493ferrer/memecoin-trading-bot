@@ -10,6 +10,7 @@ import { MarketScanner, type ScanMetrics } from './discovery/scanner.js';
 import { CopyTrader, type LeaderTrade } from './discovery/copytrader.js';
 import { WalletHunter } from './discovery/wallethunter.js';
 import { LeaderBook } from './leaders.js';
+import { ClusterTracker } from './consensus.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -297,6 +298,7 @@ async function main(): Promise<void> {
   // ------------------------------------------------------------- copy trading
 
   const copyLog = 'data/copy.jsonl';
+  const clusters = new ClusterTracker(config.copy.consensusWindowSeconds * 1_000);
   copier.on('trade', (trade: LeaderTrade) => {
     const row = { ts: new Date().toISOString(), ...trade };
     if (trade.side === 'sell') {
@@ -324,6 +326,12 @@ async function main(): Promise<void> {
       void record('reject', 'already holding this token');
       return;
     }
+    const agreeing = clusters.add(trade.mint, trade.leader);
+    if (agreeing.length < config.copy.minLeadersAgree) {
+      void record('reject', `waiting for consensus (${agreeing.length}/${config.copy.minLeadersAgree} leaders)`);
+      log.info(`copy: ${trade.label} bought ${short(trade.mint)} — ${agreeing.length}/${config.copy.minLeadersAgree} leaders agree, waiting`);
+      return;
+    }
     const candidate: TokenCandidate = {
       mint: trade.mint,
       symbol: short(trade.mint),
@@ -335,7 +343,10 @@ async function main(): Promise<void> {
       discoveredAt: Date.now(),
     };
     log.info(`copy: ${trade.label} bought ${short(trade.mint)} for ${fmtSol(trade.sol)} (${trade.delaySeconds.toFixed(1)}s ago)`);
-    void enterPosition(candidate, `copy ${trade.label}: leader bought ${fmtSol(trade.sol)}`, record).catch((err) =>
+    const why = config.copy.minLeadersAgree > 1
+      ? `cluster: ${agreeing.length} leaders bought within ${config.copy.consensusWindowSeconds}s`
+      : `copy ${trade.label}: leader bought ${fmtSol(trade.sol)}`;
+    void enterPosition(candidate, why, record).catch((err) =>
       log.error(`copy entry error for ${short(trade.mint)}: ${(err as Error).message}`),
     );
   });

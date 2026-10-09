@@ -14,7 +14,9 @@
     "wallets": [],
     "minLeaderBuySol": 0.3,
     "followSellPct": 50,
-    "maxDelaySeconds": 20
+    "maxDelaySeconds": 20,
+    "minLeadersAgree": 2,
+    "consensusWindowSeconds": 300
   },
   "hunter": {
     "enabled": true,
