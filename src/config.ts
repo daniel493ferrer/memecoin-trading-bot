@@ -35,6 +35,24 @@ export const ConfigSchema = z.object({
     /** Skip a leader buy if we would enter more than this many seconds late. */
     maxDelaySeconds: z.number().min(1).default(20),
   }).default({}),
+  /** Finds copy-trading leaders automatically from on-chain data. */
+  hunter: z.object({
+    enabled: z.boolean().default(false),
+    /** A Solana token up this much over 6 hours is analysed as a winner. */
+    minRun6hPct: z.number().default(300),
+    minLiquidityUsd: z.number().min(0).default(30_000),
+    /** Early buyers must have paid at least this many times less than now. */
+    minMultiple: z.number().gt(1).default(3),
+    /** Oldest pool transactions read per winner. */
+    sampleSize: z.number().int().min(20).max(1000).default(200),
+    /** Signature pages (1000 each) walked back per pool. */
+    maxPages: z.number().int().min(1).max(100).default(15),
+    /** Different winners a wallet must have bought early in to be copied. */
+    minHits: z.number().int().min(1).default(2),
+    maxLeaders: z.number().int().min(1).default(15),
+    /** Stop copying a leader once this many copied trades net a loss. */
+    pruneAfterTrades: z.number().int().min(1).default(4),
+  }).default({}),
   /** Market scanner: buys tokens that are pumping now, at any age. */
   scanner: z.object({
     enabled: z.boolean().default(false),

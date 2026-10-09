@@ -129,6 +129,8 @@ export class MarketScanner extends EventEmitter {
 
         for (const [mint, pair] of this.bestPairs(pairs, chain.dexscreener)) {
           const metrics = toMetrics(pair, chain.name);
+          // Every looked-up token, for consumers such as the wallet hunter.
+          this.emit('snapshot', mint, metrics, pair.baseToken?.symbol ?? short(mint));
           if (this.rejectReason(metrics)) continue;
           passed++;
           const candidate: TokenCandidate = {

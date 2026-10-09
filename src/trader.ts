@@ -171,9 +171,17 @@ export class Trader {
   }
 
   /** Close the book on a position and log realized PnL. */
+  /** Called after every closed position (used to score copied leaders). */
+  onClose: ((position: Position, pnlSol: number) => void) | null = null;
+
   finalize(position: Position, reason: ExitReason): void {
     position.exitReason = reason;
     const pnl = position.solReceived - position.solSpent;
+    try {
+      this.onClose?.(position, pnl);
+    } catch (err) {
+      log.warn(`close hook failed: ${(err as Error).message}`);
+    }
     const pnlPct = (pnl / position.solSpent) * 100;
     this.store.close(position);
     log.trade(

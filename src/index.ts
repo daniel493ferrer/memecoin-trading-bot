@@ -8,6 +8,8 @@ import { PumpFunStream } from './discovery/pumpfun.js';
 import { RaydiumListener } from './discovery/raydium.js';
 import { MarketScanner, type ScanMetrics } from './discovery/scanner.js';
 import { CopyTrader, type LeaderTrade } from './discovery/copytrader.js';
+import { WalletHunter } from './discovery/wallethunter.js';
+import { LeaderBook } from './leaders.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -113,6 +115,19 @@ async function main(): Promise<void> {
   const raydium = new RaydiumListener(rpc);
   const scanner = new MarketScanner(config.scanner);
   const copier = new CopyTrader(rpc, config.copy);
+  const leaders = new LeaderBook(config.hunter);
+  const hunter = new WalletHunter(rpc, config.hunter, leaders, (address) => {
+    const r = leaders.get(address);
+    log.ok(`hunter: new leader ${short(address)} — bought early in ${r?.hits.length ?? 0} winners; copying it now`);
+    if (config.copy.enabled) copier.addLeader(address, `auto-${address.slice(0, 4)}`);
+  });
+  trader.onClose = (position, pnlSol) => {
+    if (!position.leader) return;
+    if (leaders.recordResult(position.leader, pnlSol, position.solSpent)) {
+      log.warn(`copy: leader ${short(position.leader)} loses money when copied — dropping it`);
+      void copier.removeLeader(position.leader);
+    }
+  };
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
   const observer = new CandidateObserver(pumpStream, config.observation);
   const strategy = createStrategy(config.strategy.name);
@@ -325,6 +340,15 @@ async function main(): Promise<void> {
     );
   });
 
+  // ------------------------------------------------------------ wallet hunter
+
+  scanner.on('snapshot', (mint: string, metrics: ScanMetrics, symbol: string) => {
+    if (!config.hunter.enabled || metrics.chain !== 'solana') return;
+    if (metrics.priceChange6hPct < config.hunter.minRun6hPct) return;
+    if (metrics.liquidityUsd < config.hunter.minLiquidityUsd) return;
+    hunter.consider(mint, metrics.pairAddress, symbol);
+  });
+
   // ------------------------------------------------------------ market scanner
 
   const scannerLog = 'data/scanner.jsonl';
@@ -400,11 +424,11 @@ async function main(): Promise<void> {
     scanner.start();
   }
   if (config.copy.enabled) {
-    if (config.copy.wallets.length === 0) {
-      log.warn('copy trading is enabled but copy.wallets is empty — add leader wallets to config.json');
-    } else {
-      copier.start();
-    }
+    copier.start();
+    // Leaders found by the hunter in earlier runs.
+    for (const r of leaders.active) copier.addLeader(r.address, `auto-${r.address.slice(0, 4)}`);
+    log.ok(`copy trading: ${copier.watchedCount} leader wallet(s) in total` +
+      (config.hunter.enabled ? ' — the hunter adds more as it finds them' : ''));
   }
   monitor.start();
 

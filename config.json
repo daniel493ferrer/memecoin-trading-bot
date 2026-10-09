@@ -16,6 +16,17 @@
     "followSellPct": 50,
     "maxDelaySeconds": 20
   },
+  "hunter": {
+    "enabled": true,
+    "minRun6hPct": 300,
+    "minLiquidityUsd": 30000,
+    "minMultiple": 3,
+    "sampleSize": 200,
+    "maxPages": 15,
+    "minHits": 2,
+    "maxLeaders": 15,
+    "pruneAfterTrades": 4
+  },
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,

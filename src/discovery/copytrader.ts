@@ -14,6 +14,8 @@ export interface LeaderTrade {
   sol: number;
   /** Share of the leader's prior token balance sold (sells only), 0-100. */
   soldPct: number;
+  /** Tokens bought or sold (UI units). */
+  tokens: number;
   signature: string;
   /** Seconds between the leader's trade landing and us seeing it. */
   delaySeconds: number;
@@ -32,7 +34,8 @@ const IGNORED_MINTS = new Set([
  * they make: which token, which side, how much SOL.
  */
 export class CopyTrader extends EventEmitter {
-  private subscriptions: number[] = [];
+  /** Subscription id per watched leader address. */
+  private subscriptions = new Map<string, number>();
   private seen = new Set<string>();
 
   constructor(
@@ -43,40 +46,54 @@ export class CopyTrader extends EventEmitter {
   }
 
   start(): void {
-    for (const leader of this.cfg.wallets) {
-      let pubkey: PublicKey;
-      try {
-        pubkey = new PublicKey(leader.address);
-      } catch {
-        log.error(`copy: invalid leader wallet address ${leader.address} — skipped`);
-        continue;
-      }
-      const id = this.rpc.connection.onLogs(
-        pubkey,
-        (entry) => {
-          if (entry.err || this.seen.has(entry.signature)) return;
-          this.seen.add(entry.signature);
-          if (this.seen.size > 20_000) this.seen.clear();
-          this.handle(leader, pubkey, entry.signature).catch((err) =>
-            log.warn(`copy: could not read ${short(entry.signature)}: ${(err as Error).message}`),
-          );
-        },
-        'confirmed',
-      );
-      this.subscriptions.push(id);
+    for (const leader of this.cfg.wallets) this.addLeader(leader.address, leader.label);
+    log.ok(`copy trading: watching ${this.subscriptions.size} configured leader wallet(s)`);
+  }
+
+  get watchedCount(): number {
+    return this.subscriptions.size;
+  }
+
+  /** Start copying a wallet (configured or discovered). Returns false if invalid or already watched. */
+  addLeader(address: string, label?: string): boolean {
+    if (this.subscriptions.has(address)) return false;
+    let pubkey: PublicKey;
+    try {
+      pubkey = new PublicKey(address);
+    } catch {
+      log.error(`copy: invalid leader wallet address ${address} — skipped`);
+      return false;
     }
-    log.ok(`copy trading: watching ${this.subscriptions.length} leader wallet(s)`);
+    const leader = { address, label };
+    const id = this.rpc.connection.onLogs(
+      pubkey,
+      (entry) => {
+        if (entry.err || this.seen.has(entry.signature)) return;
+        this.seen.add(entry.signature);
+        if (this.seen.size > 20_000) this.seen.clear();
+        this.handle(leader, pubkey, entry.signature).catch((err) =>
+          log.warn(`copy: could not read ${short(entry.signature)}: ${(err as Error).message}`),
+        );
+      },
+      'confirmed',
+    );
+    this.subscriptions.set(address, id);
+    return true;
+  }
+
+  async removeLeader(address: string): Promise<void> {
+    const id = this.subscriptions.get(address);
+    if (id === undefined) return;
+    this.subscriptions.delete(address);
+    await this.rpc.connection.removeOnLogsListener(id).catch(() => {});
   }
 
   async stop(): Promise<void> {
-    for (const id of this.subscriptions) {
-      await this.rpc.connection.removeOnLogsListener(id).catch(() => {});
-    }
-    this.subscriptions = [];
+    for (const address of [...this.subscriptions.keys()]) await this.removeLeader(address);
   }
 
   private async handle(
-    leader: BotConfig['copy']['wallets'][number],
+    leader: { address: string; label?: string },
     pubkey: PublicKey,
     signature: string,
   ): Promise<void> {
@@ -138,10 +155,10 @@ export function parseLeaderSwap(
     const before = pre.get(mint) ?? 0;
     const after = post.get(mint) ?? 0;
     if (after > before && totalSolDelta < 0) {
-      trades.push({ side: 'buy', mint, sol: -totalSolDelta, soldPct: 0 });
+      trades.push({ side: 'buy', mint, sol: -totalSolDelta, soldPct: 0, tokens: after - before });
     } else if (after < before && totalSolDelta > 0) {
       const soldPct = before > 0 ? ((before - after) / before) * 100 : 100;
-      trades.push({ side: 'sell', mint, sol: totalSolDelta, soldPct });
+      trades.push({ side: 'sell', mint, sol: totalSolDelta, soldPct, tokens: before - after });
     }
   }
   // A swap moves one token against SOL; anything else (multi-token routes,

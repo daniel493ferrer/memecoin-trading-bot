@@ -474,3 +474,102 @@ test('copy trading reads a leader buy and sell from a parsed transaction', async
   // A plain SOL transfer with no token change is not a trade.
   assert.deepEqual(parseLeaderSwap(tx(10, 9, 0, 0), LEADER), []);
 });
+
+test('wallet hunter keeps cheap early buyers, skips launch snipers', async () => {
+  const { earlySmartBuyers } = await import('../src/discovery/wallethunter.js');
+  const swaps = [
+    { wallet: 'sniper', side: 'buy' as const, price: 1, slot: 100 },   // first slots: insider
+    { wallet: 'smart', side: 'buy' as const, price: 2, slot: 140 },    // 5x cheaper than now
+    { wallet: 'late', side: 'buy' as const, price: 6, slot: 300 },     // under 3x
+    { wallet: 'seller', side: 'sell' as const, price: 1, slot: 150 },
+  ];
+  assert.deepEqual(earlySmartBuyers(swaps, 10, { minMultiple: 3, skipFirstSlots: 3, reachedPoolStart: true }), ['smart']);
+  // Without the pool start in view, no slot can be called "first".
+  assert.deepEqual(
+    earlySmartBuyers(swaps, 10, { minMultiple: 3, skipFirstSlots: 3, reachedPoolStart: false }).sort(),
+    ['smart', 'sniper'],
+  );
+});
+
+test('leader book promotes repeat early buyers and drops losing leaders', async () => {
+  const { LeaderBook } = await import('../src/leaders.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const book = new LeaderBook({ minHits: 2, maxLeaders: 15, pruneAfterTrades: 2 });
+    assert.equal(book.recordHit('W', 'mintA'), false);
+    assert.equal(book.recordHit('W', 'mintA'), false, 'same token twice is one hit');
+    assert.equal(book.recordHit('W', 'mintB'), true, 'second winner promotes');
+    assert.deepEqual(book.active.map((r) => r.address), ['W']);
+    assert.equal(book.recordResult('W', -0.05, 0.25), false);
+    assert.equal(book.recordResult('W', -0.02, 0.25), true, 'net loss after 2 trades disables');
+    assert.equal(book.active.length, 0);
+    // Persisted across restarts.
+    assert.equal(new LeaderBook({ minHits: 2, maxLeaders: 15, pruneAfterTrades: 2 }).get('W')?.disabled !== undefined, true);
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('wallet hunter promotes a wallet that bought early in two winners', async () => {
+  const { WalletHunter } = await import('../src/discovery/wallethunter.js');
+  const { LeaderBook } = await import('../src/leaders.js');
+  const { PublicKey } = await import('@solana/web3.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const SMART = 'H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG';
+    const OTHER = '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM';
+    // Pool history per mint: oldest first; [wallet, side, sol, tokens].
+    const history: Record<string, Array<[string, 'buy' | 'sell', number, number]>> = {
+      MintA: [[OTHER, 'buy', 1, 1000], [SMART, 'buy', 1, 1000], [SMART, 'buy', 0.5, 500], [OTHER, 'buy', 5, 1000]],
+      MintB: [[OTHER, 'buy', 1, 1000], [SMART, 'buy', 1, 900], [OTHER, 'buy', 6, 1000]],
+    };
+    const POOLS: Record<string, string> = {
+      MintA: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
+      MintB: 'So11111111111111111111111111111111111111112',
+    };
+    const sigs = new Map<string, { mint: string; i: number }>();
+    const rpc = {
+      connection: {
+        getSignaturesForAddress: async (pool: InstanceType<typeof PublicKey>) => {
+          const mint = Object.keys(POOLS).find((m) => POOLS[m] === pool.toBase58())!;
+          // Newest first, like the real RPC.
+          return history[mint].map((_, i) => {
+            const signature = `${mint}-${i}`;
+            sigs.set(signature, { mint, i });
+            return { signature, slot: 1000 + i * 10, err: null };
+          }).reverse();
+        },
+        getParsedTransaction: async (signature: string) => {
+          const { mint, i } = sigs.get(signature)!;
+          const [wallet, side, sol, tokens] = history[mint][i];
+          const pre = side === 'buy' ? 0 : tokens;
+          const post = side === 'buy' ? tokens : 0;
+          return {
+            transaction: { message: { accountKeys: [{ pubkey: new PublicKey(wallet) }] } },
+            meta: {
+              preBalances: [100e9], postBalances: [(100 + (side === 'buy' ? -sol : sol)) * 1e9],
+              preTokenBalances: pre ? [{ owner: wallet, mint, uiTokenAmount: { uiAmount: pre } }] : [],
+              postTokenBalances: post ? [{ owner: wallet, mint, uiTokenAmount: { uiAmount: post } }] : [],
+            },
+          };
+        },
+      },
+    } as never;
+    const config = makeConfig();
+    const book = new LeaderBook({ minHits: 2, maxLeaders: 15, pruneAfterTrades: 4 });
+    const promoted: string[] = [];
+    const hunter = new WalletHunter(rpc, { ...config.hunter, sampleSize: 50, maxPages: 2 }, book, (a) => promoted.push(a));
+    hunter.consider('MintA', POOLS.MintA, 'A');
+    hunter.consider('MintB', POOLS.MintB, 'B');
+    for (let i = 0; i < 100 && promoted.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    // Current price A = 5/1000; SMART paid 1/1000 (5x). B = 6/1000; SMART paid ~1.1/1000 (5.4x).
+    // The first buyer in each pool sits in the first slots and is skipped as a sniper.
+    assert.deepEqual(promoted, [SMART]);
+  } finally {
+    process.chdir(cwd);
+  }
+});
