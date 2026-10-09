@@ -8,16 +8,20 @@ Base, BNB Chain y Robinhood Chain**
 fuerte ahora mismo**, lo compra y lo vende cuando cae un **20 % desde su
 máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
 
-**Compra un token solo si TODO se cumple** (tendencia confirmada, no pico):
-- tiene **20 minutos de vida o más** (la mayoría muere al nacer),
-- **$20 000+ de liquidez** y capitalización menor de $20M (espacio para crecer),
-- subió **+20 % o más en la última hora** con **$50 000+ de volumen** en esa hora,
-- **sigue subiendo ahora**: entre **+3 % y +60 % en 5 min** (más de +60 % es un pico:
-  comprarlo es comprar el techo, y los datos dicen que eso pierde),
-- el volumen de los últimos 5 min va **por encima del ritmo de la hora** (el interés
-  acelera, no se apaga), con **30+ compras** y **1.2 compras por venta**,
-- pasa la seguridad: nadie puede crear más tokens ni congelarlos, y los 10 mayores
-  dueños no tienen más del 30 %.
+**Modo actual: `pullback` (comprar el rebote).** Compra un token solo si:
+- tiene **2 horas de vida o más** y **$20 000+ de liquidez**,
+- **subió +100 % o más en 6 horas** (es un token fuerte),
+- **está corrigiendo**: en la última hora cayó entre **−10 % y −40 %**
+  (un descanso, no un desplome),
+- **empieza a rebotar**: entre **+2 % y +25 % en 5 minutos**,
+- hay volumen real y **más compras que ventas**,
+- pasa la revisión de seguridad.
+
+La idea: los que compran cuando "ya está subiendo" llegan tarde y pierden
+(lo confirmaron ~15 operaciones de prueba: 1 ganadora). Aquí se compra la
+corrección de un token que ya demostró fuerza, más barato que el pico.
+
+El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 
 **Vende así:**
 - **−25 %** desde la compra: corta la pérdida.

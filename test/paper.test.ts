@@ -269,7 +269,7 @@ test('three positions of 25% each keep a 25% reserve', async () => {
 
 test('scanner flags only tokens pumping per the rules', async () => {
   const { MarketScanner } = await import('../src/discovery/scanner.js');
-  const config = makeConfig();
+  const config = makeConfig((c) => { c.scanner.mode = 'momentum'; c.scanner.minAgeMinutes = 20; });
   const PUMP = 'PumpMint1111111111111111111111111111111111';
   const FLAT = 'FlatMint1111111111111111111111111111111111';
   const SPIKE = 'SpikeMint111111111111111111111111111111111';
@@ -393,6 +393,8 @@ test('other chains: scanner signal, GoPlus honeypot block, paper trade in USD te
   try {
     const config = makeConfig((c) => {
       c.scanner.chains = [{ name: 'base', dexscreener: 'base', goplusChainId: '8453' }];
+      c.scanner.mode = 'momentum';
+      c.scanner.minAgeMinutes = 20;
       c.entry.maxPositionSol = 1;
     });
     const scanner = new MarketScanner(config.scanner);
@@ -429,4 +431,20 @@ test('other chains: scanner signal, GoPlus honeypot block, paper trade in USD te
     globalThis.fetch = realFetch;
     process.chdir(cwd);
   }
+});
+
+test('pullback mode buys the bounce of a runner, not spikes or dumps', async () => {
+  const { MarketScanner, toMetrics } = await import('../src/discovery/scanner.js');
+  const config = makeConfig((c) => { c.scanner.mode = 'pullback'; c.scanner.minAgeMinutes = 120; });
+  const scanner = new MarketScanner(config.scanner);
+  const metrics = (h6: number, h1: number, m5: number) => toMetrics({
+    chainId: 'solana', baseToken: { address: 'x' }, priceUsd: '1', txns: { m5: { buys: 100, sells: 50 } },
+    volume: { m5: 30_000, h1: 300_000 }, priceChange: { m5, h1, h6 }, liquidity: { usd: 80_000 },
+    marketCap: 2_000_000, pairCreatedAt: Date.now() - 5 * 3_600_000,
+  });
+  assert.equal(scanner.rejectReason(metrics(300, -25, 8)), null);
+  assert.match(scanner.rejectReason(metrics(300, 40, 30))!, /no pullback/);
+  assert.match(scanner.rejectReason(metrics(300, -70, 5))!, /dump/);
+  assert.match(scanner.rejectReason(metrics(300, -25, -3))!, /no bounce/);
+  assert.match(scanner.rejectReason(metrics(30, -25, 8))!, /6h run/);
 });

@@ -12,6 +12,14 @@
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
+    "mode": "pullback",
+    "pullback": {
+      "minRun6hPct": 100,
+      "minDip1hPct": -40,
+      "maxDip1hPct": -10,
+      "minBounce5mPct": 2,
+      "maxBounce5mPct": 25
+    },
     "chains": [
       {
         "name": "solana",
@@ -38,7 +46,7 @@
       }
     ],
     "minLiquidityUsd": 20000,
-    "minAgeMinutes": 20,
+    "minAgeMinutes": 120,
     "maxAgeHours": 0,
     "maxMarketCapUsd": 20000000,
     "minPriceChange1hPct": 20,

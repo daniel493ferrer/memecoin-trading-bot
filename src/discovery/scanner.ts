@@ -15,6 +15,7 @@ export interface ScanMetrics {
   ageMinutes: number;
   priceChange5mPct: number;
   priceChange1hPct: number;
+  priceChange6hPct: number;
   buys5m: number;
   sells5m: number;
   volume5mUsd: number;
@@ -246,6 +247,7 @@ export class MarketScanner extends EventEmitter {
     if (m.ageMinutes < c.minAgeMinutes) return 'token too young';
     if (c.maxAgeHours > 0 && m.ageMinutes > c.maxAgeHours * 60) return 'token too old';
     if (c.maxMarketCapUsd > 0 && m.marketCapUsd > c.maxMarketCapUsd) return 'market cap too high';
+    if (c.mode === 'pullback') return this.pullbackReason(m);
     // Trend confirmed over the hour...
     if (m.priceChange1hPct < c.minPriceChange1hPct) return '1h change too small';
     if (m.volume1hUsd < c.minVolume1hUsd) return '1h volume too low';
@@ -262,6 +264,25 @@ export class MarketScanner extends EventEmitter {
 
 
   /** Warn at most once every 10 minutes per source. */
+  /**
+   * Pullback mode: a token with a strong multi-hour run that is correcting
+   * over the last hour and starts bouncing now, with buyers back in control.
+   * Buys the dip of a proven runner instead of the top of a fresh spike.
+   */
+  private pullbackReason(m: ScanMetrics): string | null {
+    const p = this.cfg.pullback;
+    if (m.priceChange6hPct < p.minRun6hPct) return '6h run too small';
+    if (m.priceChange1hPct > p.maxDip1hPct) return 'no pullback in the last hour';
+    if (m.priceChange1hPct < p.minDip1hPct) return 'falling too hard (dump, not dip)';
+    if (m.priceChange5mPct < p.minBounce5mPct) return 'no bounce yet';
+    if (m.priceChange5mPct > p.maxBounce5mPct) return 'bounce already extended';
+    if (m.volume1hUsd < this.cfg.minVolume1hUsd) return '1h volume too low';
+    if (m.volume5mUsd < this.cfg.minVolume5mUsd) return '5m volume too low';
+    if (m.buys5m < this.cfg.minBuys5m) return 'too few buys';
+    if (m.buys5m < this.cfg.minBuySellRatio5m * Math.max(1, m.sells5m)) return 'sellers too strong';
+    return null;
+  }
+
   private warnThrottled(key: string, message: string): void {
     const last = this.warnedAt.get(key) ?? 0;
     if (Date.now() - last < 10 * 60_000) return;
@@ -282,6 +303,7 @@ export function toMetrics(pair: DexPair, chain = 'solana'): ScanMetrics {
     ageMinutes: pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 60_000 : 0,
     priceChange5mPct: num(pair.priceChange?.m5),
     priceChange1hPct: num(pair.priceChange?.h1),
+    priceChange6hPct: num(pair.priceChange?.h6),
     buys5m: num(pair.txns?.m5?.buys),
     sells5m: num(pair.txns?.m5?.sells),
     volume5mUsd: num(pair.volume?.m5),

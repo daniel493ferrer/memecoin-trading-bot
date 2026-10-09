@@ -26,6 +26,21 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     intervalSeconds: z.number().int().min(10).default(20),
     /**
+     * momentum: buy tokens rising now (the 5m/1h rules below).
+     * pullback: buy the bounce of a strong multi-hour runner after a dip.
+     */
+    mode: z.enum(['momentum', 'pullback']).default('momentum'),
+    pullback: z.object({
+      /** Required run over the last 6 hours. */
+      minRun6hPct: z.number().default(100),
+      /** Last-hour change must sit between these (a dip, not a dump). */
+      minDip1hPct: z.number().default(-40),
+      maxDip1hPct: z.number().default(-10),
+      /** Last-5-minute bounce window. */
+      minBounce5mPct: z.number().default(2),
+      maxBounce5mPct: z.number().default(25),
+    }).default({}),
+    /**
      * Chains to scan. Only Solana can trade live; other chains run in paper
      * mode to measure where the strategy works before building execution.
      */
