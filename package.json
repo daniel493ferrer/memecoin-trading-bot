@@ -12,7 +12,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test",
     "reset-paper": "tsx src/reset-paper.ts",
-    "telegram-login": "tsx src/telegram-login.ts"
+    "telegram-login": "tsx src/telegram-login.ts",
+    "simulate": "tsx src/simulate.ts"
   },
   "keywords": [
     "solana",

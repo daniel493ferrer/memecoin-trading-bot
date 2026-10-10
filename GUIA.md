@@ -65,6 +65,24 @@ Al acabar cada día (UTC) el bot muestra y guarda en `data/daily-summary.csv`:
 número de operaciones, win rate, ganancia media, pérdida media y PnL total.
 `npm run report` muestra también los últimos 7 días.
 
+## Simulador (probar el bot en segundos)
+
+```bash
+npm run simulate                       # 24 horas simuladas
+npm run simulate -- --hours 6 --seed 3 # otra duración / otro mercado inventado
+```
+
+Inventa memecoins graduadas con historias típicas (runners que hacen 2x–25x,
+pump & dump, rugs, honeypots, tokens que se apagan, creadores que venden) y
+las pasa por **los mismos filtros, entrada y salidas del bot** con un reloj
+acelerado. Al final muestra cuántas compró de cada tipo, por qué rechazó las
+demás y el resultado por razón de salida. Las operaciones quedan en
+`simulation/data/paper-trades.csv`.
+
+**Sirve para comprobar que el bot hace lo que debe** (y para ver el efecto de
+cambiar `config.json`), **no para saber si ganará en el mercado real**: el
+resultado depende de cómo se inventa el mercado.
+
 ## Cómo arrancarlo
 
 ```bash

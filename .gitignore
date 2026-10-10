@@ -12,3 +12,4 @@ data/
 # deps / build
 node_modules/
 dist/
+simulation/

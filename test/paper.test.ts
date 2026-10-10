@@ -1014,3 +1014,14 @@ test('daily summary and day-start capital', async () => {
     process.chdir(cwd);
   }
 });
+
+test('market simulator runs the full pipeline end to end', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync(process.execPath, ['--import', 'tsx', 'src/simulate.ts', '--hours', '2', '--seed', '5', '--quiet'], {
+    encoding: 'utf8', timeout: 120_000,
+  });
+  assert.match(out, /=== Simulation/);
+  const bought = Number(/bought: (\d+)/.exec(out)?.[1]);
+  assert.ok(bought > 0, `expected some simulated buys:\n${out}`);
+  assert.doesNotMatch(/bought by kind: (.*)/.exec(out)?.[1] ?? '', /honeypot/, 'honeypots must be rejected');
+});
