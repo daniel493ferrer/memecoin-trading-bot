@@ -34,7 +34,7 @@
     "url": "https://github.com/daniel493ferrer/memecoin-trading-bot/issues"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.98.0",
+    "@solana/web3.js": "^1.99.0",
     "bs58": "^6.0.0",
     "dotenv": "^16.4.7",
     "teleproto": "^1.230.0",

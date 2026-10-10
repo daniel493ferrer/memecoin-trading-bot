@@ -681,3 +681,38 @@ test('graduation watcher: baseline, wait, then signal only when the token held',
     globalThis.fetch = realFetch;
   }
 });
+
+test('reads version-1 transactions (Solana 2026 format)', async () => {
+  const realFetch = globalThis.fetch;
+  const LEADER = 'H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG';
+  let requestedVersion: unknown;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    requestedVersion = body.params?.[1]?.maxSupportedTransactionVersion;
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {
+      slot: 1, blockTime: 1, version: 1,
+      meta: {
+        err: null, fee: 5000, preBalances: [2e9], postBalances: [1e9], innerInstructions: [],
+        logMessages: [], preTokenBalances: [], postTokenBalances: [], rewards: [], loadedAddresses: { writable: [], readonly: [] },
+      },
+      transaction: {
+        signatures: ['5'.repeat(88)],
+        message: {
+          accountKeys: [{ pubkey: LEADER, signer: true, writable: true, source: 'transaction' }],
+          instructions: [], recentBlockhash: '11111111111111111111111111111111',
+        },
+      },
+    } }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const rpc = new Rpc('test-key', 1000);
+    const { MAX_TX_VERSION } = await import('../src/utils.js');
+    const tx = await rpc.connection.getParsedTransaction('5'.repeat(88), {
+      maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed',
+    });
+    assert.equal(requestedVersion, 1);
+    assert.equal(tx?.version, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

@@ -1,4 +1,7 @@
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+/** Highest transaction version the bot reads (Solana added v1 in 2026). */
+export const MAX_TX_VERSION = 1;
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

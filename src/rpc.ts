@@ -5,7 +5,7 @@ import {
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { log } from './logger.js';
-import { short, sleep } from './utils.js';
+import { short, sleep, MAX_TX_VERSION } from './utils.js';
 
 /** Helius RPC wrapper: connection factory + reliable transaction landing. */
 export class Rpc {
@@ -102,7 +102,7 @@ export class Rpc {
     for (let attempt = 0; attempt < 15; attempt++) {
       const tx = await this.connection
         .getParsedTransaction(signature, {
-          maxSupportedTransactionVersion: 0,
+          maxSupportedTransactionVersion: MAX_TX_VERSION,
           commitment: 'confirmed',
         })
         .catch(() => null);

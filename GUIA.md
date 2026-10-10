@@ -32,7 +32,7 @@ El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 **0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
 
-## Tokens graduados
+## Tokens graduados (pausada: `graduation.enabled: false`)
 
 Cuando un token de pump.fun **se gradúa** (completa su curva y pasa a PumpSwap):
 1. El bot **no compra en el momento de graduarse**: ahí venden los primeros.

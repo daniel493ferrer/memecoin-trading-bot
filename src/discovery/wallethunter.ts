@@ -4,7 +4,7 @@ import type { BotConfig } from '../config.js';
 import type { Rpc } from '../rpc.js';
 import type { LeaderBook } from '../leaders.js';
 import { log } from '../logger.js';
-import { sleep } from '../utils.js';
+import { sleep, MAX_TX_VERSION } from '../utils.js';
 import { parseLeaderSwap } from './copytrader.js';
 
 /** One swap in a token's history, reduced to what the hunter needs. */
@@ -131,7 +131,7 @@ export class WalletHunter {
       const chunk = sigs.slice(i, i + 1);
       const txs = await Promise.all(chunk.map((s) =>
         this.rpc.connection.getParsedTransaction(s.signature, {
-          maxSupportedTransactionVersion: 0,
+          maxSupportedTransactionVersion: MAX_TX_VERSION,
           commitment: 'confirmed',
         }).catch(() => null)));
       txs.forEach((tx, j) => {

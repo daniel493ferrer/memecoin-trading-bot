@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PublicKey } from '@solana/web3.js';
 import type { Rpc } from '../rpc.js';
 import { log } from '../logger.js';
-import { WSOL_MINT, lamportsToSol, short, withRetry } from '../utils.js';
+import { WSOL_MINT, lamportsToSol, short, withRetry, MAX_TX_VERSION } from '../utils.js';
 import type { TokenCandidate } from '../types.js';
 
 const RAYDIUM_AMM_V4 = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
@@ -55,7 +55,7 @@ export class RaydiumListener extends EventEmitter {
     const tx = await withRetry(
       () =>
         this.rpc.connection.getParsedTransaction(signature, {
-          maxSupportedTransactionVersion: 0,
+          maxSupportedTransactionVersion: MAX_TX_VERSION,
           commitment: 'confirmed',
         }),
       4,

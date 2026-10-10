@@ -3,7 +3,7 @@ import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import type { BotConfig } from '../config.js';
 import type { Rpc } from '../rpc.js';
 import { log } from '../logger.js';
-import { WSOL_MINT, short, sleep } from '../utils.js';
+import { WSOL_MINT, short, sleep, MAX_TX_VERSION } from '../utils.js';
 
 export interface LeaderTrade {
   leader: string;
@@ -107,7 +107,7 @@ export class CopyTrader extends EventEmitter {
     let tx: ParsedTransactionWithMeta | null = null;
     for (let attempt = 0; attempt < 6 && !tx; attempt++) {
       tx = await this.rpc.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
+        maxSupportedTransactionVersion: MAX_TX_VERSION,
         commitment: 'confirmed',
       });
       if (!tx) await sleep(400);

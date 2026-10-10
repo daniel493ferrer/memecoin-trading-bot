@@ -49,7 +49,7 @@
     "pruneAfterTrades": 4
   },
   "graduation": {
-    "enabled": true,
+    "enabled": false,
     "baselineDelaySeconds": 60,
     "waitMinutes": 5,
     "maxDropFromGraduationPct": 10,
