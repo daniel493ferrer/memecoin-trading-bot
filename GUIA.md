@@ -32,13 +32,22 @@ El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 **0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
 
-## Tokens graduados (pausada: `graduation.enabled: false`)
+## Tokens graduados (activa)
+
+**Escáner en modo `graduated`** (cada 20 s, Solana): compra memecoins graduadas
+de pump.fun que ya cotizan en **PumpSwap** si:
+- valen entre **$30K y $2M**, tienen **menos de 6 horas**,
+- movieron **$30K+ en 1 hora** y **$3K+ en 5 minutos**,
+- **suben ahora** (0 % a +50 % en 5 min, sin comprar picos más verticales),
+- **20+ compras** en 5 min y **más compras que ventas** (1.1 por venta).
+
+**Además, al graduarse:**
 
 Cuando un token de pump.fun **se gradúa** (completa su curva y pasa a PumpSwap):
 1. El bot **no compra en el momento de graduarse**: ahí venden los primeros.
-2. Toma el precio **1 minuto después** y espera **5 minutos**.
-3. **Compra** solo si en ese tiempo: **no cayó más de 10 %**, **no está cayendo
-   ahora**, hay **más compras que ventas** (1.2 por venta) y **$5 000+ de volumen
+2. Toma el precio **1 minuto después** y espera **3 minutos**.
+3. **Compra** solo si en ese tiempo: **no cayó más de 15 %**, **no está cayendo
+   ahora**, hay **más compras que ventas** (1.1 por venta) y **$3 000+ de volumen
    en 5 min**, y pasa la revisión de seguridad.
 4. Sale con las reglas de siempre.
 

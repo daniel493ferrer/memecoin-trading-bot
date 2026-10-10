@@ -95,7 +95,20 @@ export const ConfigSchema = z.object({
      * momentum: buy tokens rising now (the 5m/1h rules below).
      * pullback: buy the bounce of a strong multi-hour runner after a dip.
      */
-    mode: z.enum(['momentum', 'pullback']).default('momentum'),
+    mode: z.enum(['momentum', 'pullback', 'graduated']).default('momentum'),
+    /** graduated mode: small-cap pump.fun tokens trading on PumpSwap. */
+    graduated: z.object({
+      dexIds: z.array(z.string()).default(['pumpswap']),
+      minMarketCapUsd: z.number().min(0).default(30_000),
+      maxMarketCapUsd: z.number().min(0).default(2_000_000),
+      maxAgeHours: z.number().min(0).default(6),
+      minVolume1hUsd: z.number().min(0).default(30_000),
+      minVolume5mUsd: z.number().min(0).default(3_000),
+      minPriceChange5mPct: z.number().default(0),
+      maxPriceChange5mPct: z.number().default(50),
+      minBuys5m: z.number().int().min(0).default(20),
+      minBuySellRatio5m: z.number().min(0).default(1.1),
+    }).default({}),
     pullback: z.object({
       /** Required run over the last 6 hours. */
       minRun6hPct: z.number().default(100),

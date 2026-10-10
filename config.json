@@ -49,19 +49,33 @@
     "pruneAfterTrades": 4
   },
   "graduation": {
-    "enabled": false,
+    "enabled": true,
     "baselineDelaySeconds": 60,
-    "waitMinutes": 5,
-    "maxDropFromGraduationPct": 10,
+    "waitMinutes": 3,
+    "maxDropFromGraduationPct": 15,
     "minLiquidityUsd": 0,
-    "minVolume5mUsd": 5000,
-    "minBuySellRatio5m": 1.2,
+    "minVolume5mUsd": 3000,
+    "minBuySellRatio5m": 1.1,
     "maxConcurrent": 30
   },
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
-    "mode": "pullback",
+    "mode": "graduated",
+    "graduated": {
+      "dexIds": [
+        "pumpswap"
+      ],
+      "minMarketCapUsd": 30000,
+      "maxMarketCapUsd": 2000000,
+      "maxAgeHours": 6,
+      "minVolume1hUsd": 30000,
+      "minVolume5mUsd": 3000,
+      "minPriceChange5mPct": 0,
+      "maxPriceChange5mPct": 50,
+      "minBuys5m": 20,
+      "minBuySellRatio5m": 1.1
+    },
     "pullback": {
       "minRun6hPct": 100,
       "minDip1hPct": -40,
@@ -74,24 +88,6 @@
         "name": "solana",
         "dexscreener": "solana",
         "gecko": "solana"
-      },
-      {
-        "name": "base",
-        "dexscreener": "base",
-        "gecko": "base",
-        "goplusChainId": "8453"
-      },
-      {
-        "name": "bsc",
-        "dexscreener": "bsc",
-        "gecko": "bsc",
-        "goplusChainId": "56"
-      },
-      {
-        "name": "robinhood",
-        "dexscreener": "robinhood",
-        "gecko": "robinhood",
-        "goplusChainId": "4663"
       }
     ],
     "minLiquidityUsd": 0,

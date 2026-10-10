@@ -244,6 +244,7 @@ export class MarketScanner extends EventEmitter {
   /** Why a token does not qualify, or null when it is pumping per the rules. */
   rejectReason(m: ScanMetrics): string | null {
     const c = this.cfg;
+    if (c.mode === 'graduated') return this.graduatedReason(m);
     if (m.liquidityUsd < c.minLiquidityUsd) return 'liquidity too low';
     // Survivors only: most launches die in their first hour.
     if (m.ageMinutes < c.minAgeMinutes) return 'token too young';
@@ -266,6 +267,25 @@ export class MarketScanner extends EventEmitter {
 
 
   /** Warn at most once every 10 minutes per source. */
+  /**
+   * Graduated mode: pump.fun tokens already trading on PumpSwap, small caps
+   * a few hours old, with live volume and buyers ahead right now.
+   */
+  private graduatedReason(m: ScanMetrics): string | null {
+    const g = this.cfg.graduated;
+    if (!g.dexIds.includes(m.dexId)) return 'not a graduated pump.fun pool';
+    if (m.marketCapUsd < g.minMarketCapUsd) return 'market cap too small';
+    if (m.marketCapUsd > g.maxMarketCapUsd) return 'market cap too big';
+    if (g.maxAgeHours > 0 && m.ageMinutes > g.maxAgeHours * 60) return 'too old';
+    if (m.volume1hUsd < g.minVolume1hUsd) return '1h volume too low';
+    if (m.volume5mUsd < g.minVolume5mUsd) return '5m volume too low';
+    if (m.priceChange5mPct < g.minPriceChange5mPct) return 'not moving up now';
+    if (m.priceChange5mPct > g.maxPriceChange5mPct) return '5m spike too steep';
+    if (m.buys5m < g.minBuys5m) return 'too few buys';
+    if (m.buys5m < g.minBuySellRatio5m * Math.max(1, m.sells5m)) return 'sellers in control';
+    return null;
+  }
+
   /**
    * Pullback mode: a token with a strong multi-hour run that is correcting
    * over the last hour and starts bouncing now, with buyers back in control.

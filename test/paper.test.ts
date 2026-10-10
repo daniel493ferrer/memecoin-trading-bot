@@ -716,3 +716,21 @@ test('reads version-1 transactions (Solana 2026 format)', async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test('graduated mode matches small PumpSwap memecoins like FOMO graduates', async () => {
+  const { MarketScanner, toMetrics } = await import('../src/discovery/scanner.js');
+  const config = makeConfig((c) => { c.scanner.mode = 'graduated'; });
+  const scanner = new MarketScanner(config.scanner);
+  const m = (o: { dex?: string; mc?: number; ageMin?: number; v1h?: number; m5?: number; buys?: number; sells?: number }) => toMetrics({
+    chainId: 'solana', dexId: o.dex ?? 'pumpswap', baseToken: { address: 'x' }, priceUsd: '0.0001',
+    txns: { m5: { buys: o.buys ?? 80, sells: o.sells ?? 50 } }, volume: { m5: 15_000, h1: o.v1h ?? 120_000 },
+    priceChange: { m5: o.m5 ?? 6, h1: 200 }, liquidity: { usd: 25_000 }, marketCap: o.mc ?? 90_000,
+    pairCreatedAt: Date.now() - (o.ageMin ?? 30) * 60_000,
+  });
+  assert.equal(scanner.rejectReason(m({})), null, 'a $90K graduate, 30 min old, buyers ahead');
+  assert.equal(scanner.rejectReason(m({ mc: 1_700_000, ageMin: 300 })), null, 'a $1.7M runner still qualifies');
+  assert.match(scanner.rejectReason(m({ dex: 'raydium' }))!, /graduated/);
+  assert.match(scanner.rejectReason(m({ mc: 5_000_000 }))!, /too big/);
+  assert.match(scanner.rejectReason(m({ m5: -4 }))!, /not moving up/);
+  assert.match(scanner.rejectReason(m({ buys: 40, sells: 60 }))!, /sellers/);
+});
