@@ -5,7 +5,7 @@ import type { JupiterEngine } from './swap/jupiter.js';
 import type { PumpFunStream } from './discovery/pumpfun.js';
 import type { ExitReason, Position, PumpTradeEvent } from './types.js';
 import { log } from './logger.js';
-import { dexPrice, dexPriceSol } from './dexprice.js';
+import { batchSnapshots, dexPrice, dexPriceSol, type MarketSnapshot } from './dexprice.js';
 import { fmtPct, rawToUi, short } from './utils.js';
 
 /** A pool below this much liquidity is treated as pulled. */
@@ -20,7 +20,9 @@ const MAX_PRICE_FAILURES = 15;
 
 /**
  * Watches every open position and applies the exit rules in priority order:
- * stop loss, trailing stop, then the optional take-profit ladder.
+ * emergency (liquidity drop), stop loss (or raised stop), take-profit
+ * ladder, trailing stop (tiered by peak multiple), stale price, volume fade
+ * and the time limit. A sell that fails is retried, then alerted.
  *
  * Pricing:
  *  - pump venue: pushed in real time from bonding-curve trade events
@@ -33,6 +35,13 @@ export class ExitMonitor {
   private ticking = false;
   /** Positions with a sell currently in flight — prevents double-firing rules. */
   private selling = new Set<string>();
+  /** Positions whose sell failed: no new attempt before this time. */
+  private retryAt = new Map<string, number>();
+  /** Latest batched market data for Solana AMM positions (refreshed each tick). */
+  private snapshots = new Map<string, MarketSnapshot>();
+
+  /** Called when a sell keeps failing, so the user can act. */
+  onAlert: ((message: string) => void) | null = null;
 
   constructor(
     private readonly store: PositionStore,
@@ -80,7 +89,7 @@ export class ExitMonitor {
     for (const p of this.store.open) {
       if (p.mint === event.mint && p.creator && p.creator === event.trader) {
         log.warn(`dev sell detected on ${p.symbol} — exiting immediately`);
-        void this.exit(p, 'dev-sell');
+        void this.exit(p, 'dev-sell', true);
       }
     }
   }
@@ -119,6 +128,14 @@ export class ExitMonitor {
       }
       return dex.priceUsd;
     }
+    const snap = this.snapshots.get(position.mint);
+    if (snap && snap.priceSol > 0) {
+      if (snap.liquidityUsd < RUG_LIQUIDITY_USD) {
+        this.pulledLiquidity.add(position.id);
+        return null;
+      }
+      return snap.priceSol;
+    }
     const value = await this.jupiter.sellValueSol(
       position.mint,
       remaining,
@@ -152,6 +169,10 @@ export class ExitMonitor {
   // ------------------------------------------------------------- rule engine
 
   private async tick(): Promise<void> {
+    const solanaAmm = this.store.open
+      .filter((p) => p.venue === 'amm' && (!p.chain || p.chain === 'solana'))
+      .map((p) => p.mint);
+    this.snapshots = solanaAmm.length > 0 ? await batchSnapshots([...new Set(solanaAmm)]) : new Map();
     for (const position of this.store.open) {
       if (this.selling.has(position.id)) continue;
       try {
@@ -188,54 +209,105 @@ export class ExitMonitor {
     }
     this.priceFailures.delete(position.id);
 
+    const now = Date.now();
     const multiple = price / position.entryPrice;
+    let changed = false;
     if (price > position.peakPrice) {
       position.peakPrice = price;
-      this.store.update(position);
+      position.lastPeakAt = now;
+      changed = true;
+    }
+    const snap = this.snapshots.get(position.mint);
+    if (snap && snap.volume5mUsd > (position.peakVolume5mUsd ?? 0)) {
+      position.peakVolume5mUsd = snap.volume5mUsd;
+      changed = true;
+    }
+    if (changed) this.store.update(position);
+
+    // 1. Emergency: the pool is being drained.
+    if (exit.liquidityDropPct > 0 && snap && position.entryLiquidityUsd &&
+        snap.liquidityUsd < position.entryLiquidityUsd * (1 - exit.liquidityDropPct / 100)) {
+      log.warn(
+        `${position.symbol}: liquidity fell from $${Math.round(position.entryLiquidityUsd).toLocaleString()} ` +
+        `to $${Math.round(snap.liquidityUsd).toLocaleString()} — emergency exit`,
+      );
+      return this.exit(position, 'liquidity-drop', true);
     }
 
-    // 1. Stop loss.
-    if (multiple <= 1 - exit.stopLossPct / 100) {
-      log.info(`${position.symbol}: stop loss hit at ${fmtPct((multiple - 1) * 100)}`);
-      return this.exit(position, 'stop-loss');
+    // 2. Stop loss, or the stop raised to entry after the first take-profit.
+    const stop = position.stopPrice ?? position.entryPrice * (1 - exit.stopLossPct / 100);
+    if (price <= stop) {
+      const raised = position.stopPrice !== undefined;
+      log.info(`${position.symbol}: ${raised ? 'breakeven stop' : 'stop loss'} hit at ${fmtPct((multiple - 1) * 100)}`);
+      return this.exit(position, raised ? 'breakeven-stop' : 'stop-loss');
     }
 
-    // 2. Trailing stop (activates once, then follows the peak).
-    if (exit.trailingStop.enabled) {
+    // 3. Take-profit ladder.
+    for (const [i, rung] of exit.takeProfits.entries()) {
+      if (position.takeProfitsFilled.includes(i) || multiple < rung.multiple) continue;
+      const pct = rung.ofOriginal
+        ? Math.min(100, (rung.sellPct * Number(position.tokensRawInitial)) / Math.max(1, Number(position.tokensRawRemaining)))
+        : rung.sellPct;
+      log.info(`${position.symbol}: take-profit ${rung.multiple}x hit — selling ${pct.toFixed(0)}% of what is left`);
+      await this.partialExit(position, i, pct, rung.moveStopToEntry);
+      return;
+    }
+
+    // 4. Trailing stop from the peak.
+    const peakMultiple = position.peakPrice / position.entryPrice;
+    if (exit.trailingTiers.length > 0) {
+      const tier = [...exit.trailingTiers]
+        .sort((a, b) => a.fromMultiple - b.fromMultiple)
+        .filter((t) => peakMultiple >= t.fromMultiple)
+        .at(-1);
+      if (tier && price <= position.peakPrice * (1 - tier.trailPct / 100)) {
+        log.info(
+          `${position.symbol}: trailing stop ${tier.trailPct}% hit (peak ${peakMultiple.toFixed(2)}x → now ${multiple.toFixed(2)}x)`,
+        );
+        return this.exit(position, 'trailing-stop');
+      }
+    } else if (exit.trailingStop.enabled) {
       if (!position.trailingActive && multiple >= exit.trailingStop.activateAtMultiple) {
         position.trailingActive = true;
         this.store.update(position);
         log.info(`${position.symbol}: trailing stop armed at ${multiple.toFixed(2)}x`);
       }
-      if (position.trailingActive) {
-        const trigger = position.peakPrice * (1 - exit.trailingStop.trailPct / 100);
-        if (price <= trigger) {
-          log.info(
-            `${position.symbol}: trailing stop hit (peak ${(position.peakPrice / position.entryPrice).toFixed(2)}x → now ${multiple.toFixed(2)}x)`,
-          );
-          return this.exit(position, 'trailing-stop');
-        }
+      if (position.trailingActive && price <= position.peakPrice * (1 - exit.trailingStop.trailPct / 100)) {
+        log.info(`${position.symbol}: trailing stop hit (peak ${peakMultiple.toFixed(2)}x → now ${multiple.toFixed(2)}x)`);
+        return this.exit(position, 'trailing-stop');
       }
     }
 
-    // 3. Take-profit ladder: partial sells of the remaining position. An empty
-    //    ladder keeps the whole position on for the trailing stop.
-    for (const [i, rung] of exit.takeProfits.entries()) {
-      if (position.takeProfitsFilled.includes(i) || multiple < rung.multiple) continue;
-      log.info(`${position.symbol}: take-profit ${rung.multiple}x hit — selling ${rung.sellPct}%`);
-      await this.partialExit(position, i, rung.sellPct);
-      return;
+    // 5. Stale: no new high for too long.
+    const sincePeakMin = (now - (position.lastPeakAt ?? position.openedAt)) / 60_000;
+    if (exit.staleMinutes > 0 && sincePeakMin >= exit.staleMinutes) {
+      log.info(`${position.symbol}: no new high for ${Math.round(sincePeakMin)} min — exiting`);
+      return this.exit(position, 'stale');
+    }
+
+    // 6. Volume fade: interest gone and the price is off its high.
+    if (exit.volumeExitPct > 0 && snap && position.peakVolume5mUsd &&
+        snap.volume5mUsd < position.peakVolume5mUsd * (exit.volumeExitPct / 100) && price < position.peakPrice) {
+      log.info(
+        `${position.symbol}: 5m volume $${Math.round(snap.volume5mUsd).toLocaleString()} is under ` +
+        `${exit.volumeExitPct}% of its $${Math.round(position.peakVolume5mUsd).toLocaleString()} peak — exiting`,
+      );
+      return this.exit(position, 'volume-fade');
     }
   }
 
   /** Sell part of a position for take-profit rung `rungIndex`. */
-  private async partialExit(position: Position, rungIndex: number, pct: number): Promise<void> {
+  private async partialExit(position: Position, rungIndex: number, pct: number, moveStopToEntry = false): Promise<void> {
     if (this.selling.has(position.id)) return;
     this.selling.add(position.id);
     try {
-      const sold = await this.trader.sell(position, pct, 'take-profit');
+      const sold = await this.sellWithRetry(position, pct, 'take-profit', false);
       if (sold && position.status === 'open') {
         position.takeProfitsFilled.push(rungIndex);
+        if (moveStopToEntry) {
+          position.stopPrice = Math.max(position.stopPrice ?? 0, position.entryPrice);
+          log.info(`${position.symbol}: stop on the rest moved to the entry price`);
+        }
         this.store.update(position);
       }
       if (position.status !== 'open' && position.venue === 'pump') {
@@ -247,16 +319,38 @@ export class ExitMonitor {
   }
 
   /** Full exit requested from outside the rule engine (e.g. a copied leader sold). */
-  async exitNow(position: Position, reason: ExitReason): Promise<void> {
-    return this.exit(position, reason);
+  async exitNow(position: Position, reason: ExitReason, urgent = false): Promise<void> {
+    return this.exit(position, reason, urgent);
+  }
+
+  /**
+   * Sell with the configured immediate retries. When every attempt fails,
+   * alert once and hold off new attempts for a minute (the position stays
+   * open and is retried; it is never silently abandoned).
+   */
+  private async sellWithRetry(position: Position, pct: number, reason: ExitReason, urgent: boolean): Promise<boolean> {
+    if ((this.retryAt.get(position.id) ?? 0) > Date.now()) return false;
+    for (let attempt = 0; attempt <= this.config.exit.sellRetries; attempt++) {
+      if (await this.trader.sell(position, pct, reason, urgent)) {
+        this.retryAt.delete(position.id);
+        return true;
+      }
+      if (position.status !== 'open') return true;
+    }
+    this.retryAt.set(position.id, Date.now() + 60_000);
+    const message = `SELL FAILED for ${position.symbol} (${short(position.mint)}, ${reason}) after ` +
+      `${this.config.exit.sellRetries + 1} attempt(s) — retrying every minute; check it manually`;
+    log.error(message);
+    this.onAlert?.(message);
+    return false;
   }
 
   /** Full exit — sells 100% and closes the position. */
-  private async exit(position: Position, reason: ExitReason): Promise<void> {
+  private async exit(position: Position, reason: ExitReason, urgent = false): Promise<void> {
     if (this.selling.has(position.id)) return;
     this.selling.add(position.id);
     try {
-      const sold = await this.trader.sell(position, 100, reason);
+      const sold = await this.sellWithRetry(position, 100, reason, urgent);
       if (!sold && reason === 'rugged') {
         // Nothing sellable left — close the book at whatever was realized.
         this.trader.finalize(position, 'rugged');

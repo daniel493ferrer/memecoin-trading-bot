@@ -67,8 +67,10 @@ test('paper trade: buy on the curve, ride the move, exit on the trailing stop', 
       c.entry.positionPctOfOperatingCapital = 10;
       c.entry.maxPositionSol = 1;
       c.entry.maxOpenPositions = 3;
-      c.exit.takeProfits = [{ multiple: 2, sellPct: 50 }];
+      c.exit.takeProfits = [{ multiple: 2, sellPct: 50, ofOriginal: false, moveStopToEntry: false }];
       c.exit.trailingStop = { enabled: true, activateAtMultiple: 1.5, trailPct: 20 };
+      c.exit.trailingTiers = [];
+      c.exit.stopLossPct = 30;
     });
     const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
     const rpc = new Rpc('test-key');
@@ -396,6 +398,9 @@ test('other chains: scanner signal, GoPlus honeypot block, paper trade in USD te
       c.scanner.mode = 'momentum';
       c.scanner.minAgeMinutes = 20;
       c.entry.maxPositionSol = 1;
+      c.scanner.minLiquidityUsd = 0;
+      c.entry.reservePct = 25;
+      c.entry.positionPctOfOperatingCapital = 33.33;
     });
     const scanner = new MarketScanner(config.scanner);
     const signals: TokenCandidate[] = [];
@@ -733,4 +738,279 @@ test('graduated mode matches small PumpSwap memecoins like FOMO graduates', asyn
   assert.match(scanner.rejectReason(m({ mc: 5_000_000 }))!, /too big/);
   assert.match(scanner.rejectReason(m({ m5: -4 }))!, /not moving up/);
   assert.match(scanner.rejectReason(m({ buys: 40, sells: 60 }))!, /sellers/);
+});
+
+// ---------------------------------------------------------------- spec exits
+
+/** Paper AMM position on a fake market whose price/liquidity/volume tests control. */
+async function ammHarness(overrides: (c: BotConfig) => void = () => {}) {
+  const MINT = 'SpecMint11111111111111111111111111111111111';
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  const market = { price: 0.001, liquidityUsd: 50_000, volume5mUsd: 40_000, up: true, jupiterUp: true };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes('/swap/v1/quote')) {
+      if (!market.up || !market.jupiterUp) return new Response('down', { status: 500 });
+      const q = new URL(url).searchParams;
+      const amount = Number(q.get('amount'));
+      const out = q.get('inputMint') === WSOL
+        ? Math.floor((amount / 1e9 / market.price) * 1e6)
+        : Math.floor((amount / 1e6) * market.price * 1e9);
+      return new Response(JSON.stringify({ outAmount: String(out) }), { status: 200 });
+    }
+    if (url.includes('dexscreener')) {
+      if (!market.up) return new Response('down', { status: 500 });
+      return new Response(JSON.stringify([{
+        chainId: 'solana', baseToken: { address: MINT }, quoteToken: { address: WSOL },
+        priceNative: String(market.price), priceUsd: String(market.price * 150),
+        liquidity: { usd: market.liquidityUsd }, volume: { m5: market.volume5mUsd },
+      }]), { status: 200 });
+    }
+    return new Response('[]', { status: 200 });
+  }) as typeof fetch;
+
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  const config = makeConfig((c) => {
+    c.paper.feePct = 0;
+    c.paper.extraSlippagePct = 0;
+    c.entry.priorityFeeSol = 0;
+    c.entry.reservePct = 0;
+    c.entry.positionPctOfOperatingCapital = 10;
+    c.entry.maxPositionSol = 1000;
+    overrides(c);
+  });
+  const stream = new PumpFunStream('wss://example.invalid', { newTokens: true, migrations: true, apiKey: 'x' });
+  const rpc = new Rpc('test-key');
+  const jupiter = new JupiterEngine(rpc, config.endpoints.jupiterBase);
+  const store = new PositionStore('p.json');
+  const account = new PaperAccount(10);
+  const trader = new Trader(
+    rpc, new WalletManager(config.wallets), new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade),
+    jupiter, store, config, { account, stream },
+  );
+  const monitor = new ExitMonitor(store, trader, jupiter, stream, config);
+  const alerts: string[] = [];
+  monitor.onAlert = (m) => alerts.push(m);
+  const position = (await trader.buy(
+    { mint: MINT, symbol: 'SPEC', name: 'Spec', source: 'scanner', venue: 'amm', chain: 'solana',
+      liquidityUsd: 50_000, holders: 321, discoveredAt: 0 }, 6,
+  ))!;
+  const tick = async () => {
+    await new Promise((r) => setTimeout(r, 3_050)); // let the 3 s DexScreener cache of single lookups expire
+    await (monitor as unknown as { tick(): Promise<void> }).tick();
+  };
+  const fastTick = () => (monitor as unknown as { tick(): Promise<void> }).tick();
+  const remainingPct = () => (Number(position.tokensRawRemaining) / Number(position.tokensRawInitial)) * 100;
+  const restore = () => { globalThis.fetch = realFetch; process.chdir(cwd); };
+  return { market, position, store, trader, account, monitor, alerts, tick, fastTick, remainingPct, restore, MINT };
+}
+
+test('spec ladder: 2x sells 50% and moves stop to entry, 5x 25%, 10x 15%, runner trails 15%', async () => {
+  const h = await ammHarness();
+  try {
+    assert.equal(h.position.entryLiquidityUsd, 50_000);
+    assert.equal(h.position.holdersAtEntry, 321);
+    h.market.price = 0.0021; await h.fastTick();
+    assert.ok(Math.abs(h.remainingPct() - 50) < 0.01, `after 2x: ${h.remainingPct()}%`);
+    assert.equal(h.position.stopPrice, h.position.entryPrice, 'stop moved to entry');
+    h.market.price = 0.0052; await h.fastTick();
+    assert.ok(Math.abs(h.remainingPct() - 25) < 0.01, `after 5x: ${h.remainingPct()}%`);
+    h.market.price = 0.0105; await h.fastTick();
+    assert.ok(Math.abs(h.remainingPct() - 10) < 0.01, `after 10x: ${h.remainingPct()}%`);
+    h.market.price = 0.0093; await h.fastTick();
+    assert.equal(h.store.openCount, 1, '11% off a 10.5x peak is inside the 15% trail');
+    h.market.price = 0.0088; await h.fastTick();
+    assert.equal(h.store.openCount, 0, '16% off the peak closes the runner');
+    const csv = fs.readFileSync('data/paper-trades.csv', 'utf8').trim().split('\n');
+    assert.equal(csv.length, 2);
+    assert.match(csv[1], /trailing-stop/);
+    assert.match(csv[1], /,50000,321$/);
+    assert.ok(Number(csv[1].split(',')[8]) > 0, 'profitable trade');
+  } finally {
+    h.restore();
+  }
+});
+
+test('spec trailing tiers: 30% below 5x', async () => {
+  const h = await ammHarness((c) => { c.exit.takeProfits = []; });
+  try {
+    h.market.price = 0.003; await h.fastTick(); // peak 3x
+    h.market.price = 0.0022; await h.fastTick(); // -26.7% from peak
+    assert.equal(h.store.openCount, 1);
+    h.market.price = 0.002; await h.fastTick(); // -33% from peak
+    assert.equal(h.store.openCount, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('spec breakeven: after the 2x sale the rest exits at the entry price', async () => {
+  const h = await ammHarness();
+  try {
+    h.market.price = 0.0021; await h.fastTick();
+    h.market.price = 0.00099; await h.fastTick();
+    assert.equal(h.store.openCount, 0);
+    assert.match(fs.readFileSync('data/paper-trades.csv', 'utf8'), /breakeven-stop/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('spec stop loss -25%', async () => {
+  const h = await ammHarness();
+  try {
+    h.market.price = 0.00078; await h.fastTick();
+    assert.equal(h.store.openCount, 1);
+    h.market.price = 0.00074; await h.fastTick();
+    assert.equal(h.store.openCount, 0);
+    assert.match(fs.readFileSync('data/paper-trades.csv', 'utf8'), /stop-loss/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('spec stale exit, volume-fade exit and liquidity emergency exit', async () => {
+  let h = await ammHarness();
+  try {
+    h.position.lastPeakAt = Date.now() - 41 * 60_000;
+    await h.fastTick();
+    assert.match(fs.readFileSync('data/paper-trades.csv', 'utf8'), /stale/);
+  } finally {
+    h.restore();
+  }
+  h = await ammHarness();
+  try {
+    h.market.price = 0.0012; await h.fastTick(); // new peak, volume 40k recorded
+    h.market.price = 0.0011; h.market.volume5mUsd = 10_000; await h.fastTick(); // < 30% of peak, off the high
+    assert.match(fs.readFileSync('data/paper-trades.csv', 'utf8'), /volume-fade/);
+  } finally {
+    h.restore();
+  }
+  h = await ammHarness();
+  try {
+    h.market.liquidityUsd = 30_000; await h.fastTick(); // -40% from 50k
+    assert.match(fs.readFileSync('data/paper-trades.csv', 'utf8'), /liquidity-drop/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('spec sell failure: one retry, then an alert, position kept open', async () => {
+  const h = await ammHarness();
+  try {
+    h.market.price = 0.0007; // below the stop
+    await h.fastTick(); // DexScreener up: stop fires
+    // That stop sell succeeded; make a fresh case where selling is impossible.
+  } finally {
+    h.restore();
+  }
+  const g = await ammHarness();
+  try {
+    g.market.price = 0.0007;
+    g.market.jupiterUp = false;
+    // Paper sells fall back to the cached DexScreener price; take that away too.
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls++;
+      // first call (batch snapshot) still returns the low price, later price lookups fail
+      return calls === 1 ? realFetch(input) : new Response('down', { status: 500 });
+    }) as typeof fetch;
+    await g.fastTick();
+    assert.equal(g.store.openCount, 1, 'not abandoned');
+    assert.equal(g.alerts.length, 1);
+    assert.match(g.alerts[0], /SELL FAILED/);
+    globalThis.fetch = realFetch;
+  } finally {
+    g.restore();
+  }
+});
+
+test('prevention: Token-2022 traps are rejected', async () => {
+  const { dangerousExtensions } = await import('../src/safety.js');
+  const base = { decimals: 6, mintAuthority: null, freezeAuthority: null, supply: '1' };
+  assert.deepEqual(dangerousExtensions(base), []);
+  assert.match(dangerousExtensions({ ...base, extensions: [{ extension: 'transferHook', state: { programId: 'X' } }] })[0], /hook/);
+  assert.match(dangerousExtensions({ ...base, extensions: [{ extension: 'permanentDelegate', state: { delegate: 'X' } }] })[0], /delegate/);
+  assert.match(dangerousExtensions({ ...base, extensions: [{ extension: 'transferFeeConfig', state: { newerTransferFee: { transferFeeBasisPoints: 2500 } } }] })[0], /25\.0%/);
+  assert.deepEqual(dangerousExtensions({ ...base, extensions: [{ extension: 'transferFeeConfig', state: { newerTransferFee: { transferFeeBasisPoints: 100 } } }] }), []);
+  assert.deepEqual(dangerousExtensions({ ...base, extensions: [{ extension: 'transferHook', state: { programId: null } }] }), []);
+});
+
+test('prevention: sell simulation catches no-sell tokens and hidden taxes', async () => {
+  const realFetch = globalThis.fetch;
+  let sellTax = 0;
+  let sellable = true;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const q = new URL(String(input)).searchParams;
+    const amount = Number(q.get('amount'));
+    if (q.get('inputMint') !== 'So11111111111111111111111111111111111111112') {
+      if (!sellable) return new Response('no route', { status: 400 });
+      return new Response(JSON.stringify({ outAmount: String(Math.floor(amount / 1000 * (1 - sellTax))) }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ outAmount: String(amount * 1000) }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const jupiter = new JupiterEngine(new Rpc('k'), 'https://lite-api.jup.ag');
+    assert.equal(await jupiter.sellSimulation('M', 10_000_000n, 25, 2000), null);
+    sellTax = 0.4;
+    assert.match((await jupiter.sellSimulation('M', 10_000_000n, 25, 2000))!, /loses 40%/);
+    sellable = false;
+    assert.match((await jupiter.sellSimulation('M', 10_000_000n, 25, 2000))!, /no sell route/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('launch entry: young, +40% in 5 min, volume and buyers above the previous 5 minutes', async () => {
+  const { MarketScanner, toMetrics } = await import('../src/discovery/scanner.js');
+  const config = makeConfig((c) => { c.scanner.mode = 'launch'; c.scanner.minLiquidityUsd = 10_000; });
+  const scanner = new MarketScanner(config.scanner);
+  const m = (o: { age?: number; m5?: number; v5?: number; v1h?: number; b5?: number; b1h?: number; liq?: number }) => toMetrics({
+    chainId: 'solana', dexId: 'pumpswap', baseToken: { address: 'L' }, priceUsd: '1',
+    txns: { m5: { buys: o.b5 ?? 150, sells: 60 }, h1: { buys: o.b1h ?? 300 } },
+    volume: { m5: o.v5 ?? 40_000, h1: o.v1h ?? 90_000 }, priceChange: { m5: o.m5 ?? 55, h1: 300 },
+    liquidity: { usd: o.liq ?? 25_000 }, marketCap: 200_000, pairCreatedAt: Date.now() - (o.age ?? 20) * 60_000,
+  });
+  // 20 min old: earlier 15 min traded 50k (16.7k per 5 min) and 150 buys (50 per 5 min).
+  assert.equal(scanner.rejectReason(m({})), null);
+  assert.match(scanner.rejectReason(m({ age: 45 }))!, /too old/);
+  assert.match(scanner.rejectReason(m({ m5: 25 }))!, /rise too small/);
+  assert.match(scanner.rejectReason(m({ v5: 10_000, v1h: 90_000 }))!, /volume not growing/);
+  assert.match(scanner.rejectReason(m({ b5: 40, b1h: 300 }))!, /buyers not growing/);
+  assert.match(scanner.rejectReason(m({ liq: 5_000 }))!, /liquidity/);
+  // With a sample from 5 minutes ago the real previous window is used.
+  const now = Date.now();
+  scanner.history.record({ ...m({}), volume5mUsd: 60_000, buys5m: 100 }, now - 5 * 60_000);
+  assert.match(scanner.rejectReason(m({}))!, /volume not growing/, '40k now vs 60k five minutes ago');
+});
+
+test('daily summary and day-start capital', async () => {
+  const { summarizeDay, dayStartCapital, formatSummary } = await import('../src/summary.js');
+  const dir = inTempDir();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    fs.mkdirSync('data');
+    fs.writeFileSync('data/paper-trades.csv',
+      'token,symbol,chain,entry_time,entry_price,exit_time,exit_price,exit_reason,pnl_sol,pnl_pct,peak_multiple,liquidity_usd_at_entry,holders_at_entry\n' +
+      `A,A,solana,${today}T01:00:00Z,1,${today}T01:10:00Z,2,trailing-stop,0.1,100,2.5,20000,300\n` +
+      `B,B,solana,${today}T02:00:00Z,1,${today}T02:05:00Z,0.75,stop-loss,-0.025,-25,1.1,15000,120\n` +
+      'C,C,solana,2020-01-01T00:00:00Z,1,2020-01-01T00:05:00Z,0.5,stop-loss,-1,-50,1,1,1\n');
+    const s = summarizeDay('data/paper-trades.csv', today);
+    assert.equal(s.trades, 2);
+    assert.equal(s.winRatePct, 50);
+    assert.equal(s.avgWinPct, 100);
+    assert.equal(s.avgLossPct, -25);
+    assert.ok(Math.abs(s.pnlSol - 0.075) < 1e-9);
+    assert.match(formatSummary(s), /2 trades, win rate 50\.0%/);
+    assert.equal(dayStartCapital(10), 10);
+    assert.equal(dayStartCapital(7), 10, 'same day keeps the morning baseline');
+  } finally {
+    process.chdir(cwd);
+  }
 });

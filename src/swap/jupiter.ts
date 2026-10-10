@@ -57,6 +57,29 @@ export class JupiterEngine {
     }
   }
 
+  /**
+   * Sell simulation: quote buying `testLamports` of `mint` and selling the
+   * result straight back. Returns why it fails, or null when the round trip
+   * loses at most `maxLossPct` (fees and price impact only).
+   */
+  async sellSimulation(mint: string, testLamports: bigint, maxLossPct: number, slippageBps: number): Promise<string | null> {
+    let bought: bigint;
+    try {
+      bought = BigInt((await this.quote(WSOL_MINT, mint, testLamports, slippageBps)).outAmount);
+    } catch (err) {
+      return `no buy route (${(err as Error).message.slice(0, 80)})`;
+    }
+    if (bought <= 0n) return 'buy quote returned no tokens';
+    let back: bigint;
+    try {
+      back = BigInt((await this.quote(mint, WSOL_MINT, bought, slippageBps)).outAmount);
+    } catch (err) {
+      return `no sell route (${(err as Error).message.slice(0, 80)})`;
+    }
+    const lossPct = (1 - Number(back) / Number(testLamports)) * 100;
+    return lossPct > maxLossPct ? `buy+sell round trip loses ${lossPct.toFixed(0)}%` : null;
+  }
+
   /** Why the most recent sellValueSol returned null, for diagnostics. */
   lastQuoteError: string | null = null;
 

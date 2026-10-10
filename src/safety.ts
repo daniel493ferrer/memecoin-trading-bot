@@ -12,6 +12,47 @@ interface ParsedMintInfo {
   mintAuthority: string | null;
   freezeAuthority: string | null;
   supply: string;
+  /** Token-2022 extensions, when the mint uses that program. */
+  extensions?: Array<{ extension: string; state?: Record<string, unknown> }>;
+}
+
+/** Highest Token-2022 transfer fee accepted, in basis points. */
+const MAX_TRANSFER_FEE_BPS = 1_000;
+
+/**
+ * Token-2022 extensions that can stop or tax a sale. Exported for tests.
+ */
+export function dangerousExtensions(info: ParsedMintInfo): string[] {
+  const reasons: string[] = [];
+  for (const ext of info.extensions ?? []) {
+    switch (ext.extension) {
+      case 'transferHook': {
+        const program = (ext.state as { programId?: string | null } | undefined)?.programId;
+        if (program) reasons.push('transfer hook can block sells');
+        break;
+      }
+      case 'permanentDelegate':
+        if ((ext.state as { delegate?: string | null } | undefined)?.delegate) {
+          reasons.push('permanent delegate can take tokens from holders');
+        }
+        break;
+      case 'nonTransferable':
+        reasons.push('token is non-transferable');
+        break;
+      case 'pausableConfig':
+        reasons.push('transfers can be paused');
+        break;
+      case 'transferFeeConfig': {
+        const state = ext.state as { newerTransferFee?: { transferFeeBasisPoints?: number } } | undefined;
+        const bps = Number(state?.newerTransferFee?.transferFeeBasisPoints ?? 0);
+        if (bps > MAX_TRANSFER_FEE_BPS) reasons.push(`transfer fee ${(bps / 100).toFixed(1)}%`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return reasons;
 }
 
 /**
@@ -24,6 +65,13 @@ export class SafetyChecker {
     private readonly filters: BotConfig['filters'],
     private readonly chains: BotConfig['scanner']['chains'] = [],
   ) {}
+
+  /**
+   * Sell simulation (anti-honeypot) for Solana AMM tokens: returns a reason
+   * to reject, or null when a buy-then-sell round trip quotes fine. Set by
+   * the orchestrator because it needs the swap engine.
+   */
+  sellSimulation: ((mint: string) => Promise<string | null>) | null = null;
 
   async check(candidate: TokenCandidate): Promise<SafetyReport> {
     if (candidate.chain && candidate.chain !== 'solana') {
@@ -67,27 +115,51 @@ export class SafetyChecker {
     if (this.filters.requireFreezeAuthorityRevoked && parsed.freezeAuthority) {
       reasons.push('freeze authority not revoked (transfers can be frozen)');
     }
+    reasons.push(...dangerousExtensions(parsed));
 
     if (candidate.venue === 'amm' && this.filters.maxTop10HolderPct < 100) {
       try {
-        const largest = await this.rpc.connection.getTokenLargestAccounts(mintPk);
-        const supply = Number(parsed.supply);
-        if (supply > 0 && largest.value.length > 1) {
-          const holders = largest.value.slice(1, 11);
-          const heldPct =
-            (holders.reduce((sum, a) => sum + Number(a.amount), 0) / supply) * 100;
-          if (heldPct > this.filters.maxTop10HolderPct) {
-            reasons.push(
-              `top holders control ${heldPct.toFixed(1)}% of supply (max ${this.filters.maxTop10HolderPct}%)`,
-            );
-          }
+        const heldPct = await this.top10HolderPct(mintPk, Number(parsed.supply));
+        if (heldPct > this.filters.maxTop10HolderPct) {
+          reasons.push(
+            `top holders control ${heldPct.toFixed(1)}% of supply (max ${this.filters.maxTop10HolderPct}%)`,
+          );
         }
       } catch {
         reasons.push('holder distribution check failed');
       }
     }
 
+    // Only spend the swap quotes when everything else passed.
+    if (reasons.length === 0 && candidate.venue === 'amm' && this.sellSimulation) {
+      const failure = await this.sellSimulation(candidate.mint);
+      if (failure) reasons.push(`sell simulation failed: ${failure}`);
+    }
+
     return { ok: reasons.length === 0, reasons, decimals: parsed.decimals };
+  }
+
+  /**
+   * Share of supply in the 10 largest holders, not counting liquidity pools.
+   * Pools and vaults are owned by program-derived addresses, which are off
+   * the ed25519 curve; real holders are ordinary wallets, which are on it.
+   */
+  private async top10HolderPct(mintPk: PublicKey, supply: number): Promise<number> {
+    if (supply <= 0) return 0;
+    const largest = await this.rpc.connection.getTokenLargestAccounts(mintPk);
+    const accounts = largest.value.slice(0, 20);
+    const infos = await this.rpc.connection.getMultipleParsedAccounts(accounts.map((a) => a.address));
+    let held = 0;
+    let counted = 0;
+    accounts.forEach((account, i) => {
+      if (counted >= 10) return;
+      const data = infos.value[i]?.data;
+      const owner = data && 'parsed' in data ? (data.parsed.info?.owner as string | undefined) : undefined;
+      if (owner && !PublicKey.isOnCurve(new PublicKey(owner).toBytes())) return; // pool / program vault
+      held += Number(account.amount);
+      counted++;
+    });
+    return (held / supply) * 100;
   }
 
   private async fetchMintInfo(

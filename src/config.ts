@@ -6,8 +6,11 @@ import { z } from 'zod';
 const TakeProfitSchema = z.object({
   /** Price multiple vs entry at which this rung fires (e.g. 2 = +100%). */
   multiple: z.number().gt(1),
-  /** Percent of the *remaining* position to sell when it fires. */
+  /** Percent to sell when it fires: of the remaining position, or of the original if ofOriginal. */
   sellPct: z.number().gt(0).max(100),
+  ofOriginal: z.boolean().default(false),
+  /** After this rung, raise the stop on the rest to the entry price. */
+  moveStopToEntry: z.boolean().default(false),
 });
 
 export const ConfigSchema = z.object({
@@ -95,7 +98,16 @@ export const ConfigSchema = z.object({
      * momentum: buy tokens rising now (the 5m/1h rules below).
      * pullback: buy the bounce of a strong multi-hour runner after a dip.
      */
-    mode: z.enum(['momentum', 'pullback', 'graduated']).default('momentum'),
+    mode: z.enum(['momentum', 'pullback', 'graduated', 'launch']).default('momentum'),
+    /** launch mode: young tokens surging now with growing volume and buyers. */
+    launch: z.object({
+      maxAgeMinutes: z.number().gt(0).default(30),
+      minPriceChange5mPct: z.number().default(40),
+      /** Last 5 minutes must trade more volume than the 5 minutes before. */
+      requireVolumeGrowth: z.boolean().default(true),
+      /** Buyers in the last 5 minutes must exceed the 5 minutes before. */
+      requireBuyerGrowth: z.boolean().default(true),
+    }).default({}),
     /** graduated mode: small-cap pump.fun tokens trading on PumpSwap. */
     graduated: z.object({
       dexIds: z.array(z.string()).default(['pumpswap']),
@@ -159,6 +171,8 @@ export const ConfigSchema = z.object({
     requireMintAuthorityRevoked: z.boolean(),
     requireFreezeAuthorityRevoked: z.boolean(),
     maxTop10HolderPct: z.number().gt(0).max(100),
+    /** Reject when buying then selling (quoted) loses more than this %: honeypots, hidden taxes. */
+    maxRoundTripLossPct: z.number().gt(0).max(100).default(25),
   }).refine((filters) => filters.minDevBuySol <= filters.maxDevBuySol, {
     message: 'minDevBuySol must be less than or equal to maxDevBuySol',
     path: ['minDevBuySol'],
@@ -200,6 +214,26 @@ export const ConfigSchema = z.object({
       activateAtMultiple: z.number().gt(1),
       trailPct: z.number().gt(0).lt(100),
     }),
+    /**
+     * Trailing stop tiers by peak multiple; when set they replace trailPct
+     * and the trailing stop is active from entry. The tier with the highest
+     * fromMultiple not above the peak applies.
+     */
+    trailingTiers: z.array(z.object({
+      fromMultiple: z.number().min(0),
+      trailPct: z.number().gt(0).lt(100),
+    })).default([]),
+    /** Sell if the price has not made a new high for this long (0 disables). */
+    staleMinutes: z.number().min(0).default(0),
+    /** Sell when 5-minute volume falls below this % of its peak and price is off its high (0 disables). */
+    volumeExitPct: z.number().min(0).max(100).default(0),
+    /** Emergency exit when pool liquidity falls this % below entry (0 disables). */
+    liquidityDropPct: z.number().min(0).max(100).default(0),
+    /** Slippage and priority fee for emergency sells, so they land in a crash. */
+    emergencySlippageBps: z.number().int().min(50).max(10_000).default(2500),
+    emergencyPriorityFeeSol: z.number().min(0).default(0.005),
+    /** Immediate retries of a failed sell before alerting (then retried every minute). */
+    sellRetries: z.number().int().min(0).default(1),
     maxHoldSeconds: z.number().int().min(0),
     exitOnDevSell: z.boolean(),
     sellOnMigration: z.boolean(),
@@ -214,6 +248,8 @@ export const ConfigSchema = z.object({
   risk: z.object({
     /** Stop opening positions for the rest of the UTC day after this realized loss. */
     maxDailyLossSol: z.number().gt(0).default(0.1),
+    /** Stop opening positions after losing this % of the day's starting capital (0 disables). */
+    maxDailyLossPct: z.number().min(0).max(100).default(0),
   }).default({}),
   rpc: z.object({
     /** Helius HTTP requests per second (free plan allows 10). */

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { BotConfig } from './config.js';
 import type { Rpc } from './rpc.js';
@@ -89,6 +91,9 @@ export class Trader {
       takeProfitsFilled: [],
       trailingActive: false,
       openedAt: Date.now(),
+      lastPeakAt: Date.now(),
+      entryLiquidityUsd: candidate.liquidityUsd,
+      holdersAtEntry: candidate.holders,
       status: 'open',
       buySignature: fill.signature,
       chain: candidate.chain,
@@ -115,7 +120,12 @@ export class Trader {
   }
 
   /** Sell `pct` percent of the remaining position (100 = full close). */
-  async sell(position: Position, pct: number, reason: ExitReason): Promise<boolean> {
+  /**
+   * Sell `pct` percent of the remaining position (100 = full close).
+   * `urgent` sells use the emergency slippage and priority fee so they land
+   * while the price is collapsing.
+   */
+  async sell(position: Position, pct: number, reason: ExitReason, urgent = false): Promise<boolean> {
     const remaining = BigInt(position.tokensRawRemaining);
     if (remaining <= 0n) return false;
     const sellRaw = pct >= 100 ? remaining : (remaining * BigInt(Math.floor(pct * 100))) / 10_000n;
@@ -125,7 +135,7 @@ export class Trader {
     try {
       result = this.paper
         ? await this.paperSell(this.paper, position, sellRaw)
-        : await this.liveSell(position, sellRaw);
+        : await this.liveSell(position, sellRaw, urgent);
     } catch (err) {
       log.error(`sell failed for ${position.symbol} (${reason}): ${(err as Error).message}`);
       return false;
@@ -184,6 +194,7 @@ export class Trader {
     }
     const pnlPct = (pnl / position.solSpent) * 100;
     this.store.close(position);
+    this.writeCsv(position, reason, pnl, pnlPct);
     log.trade(
       `${this.tag}CLOSED ${position.symbol} (${reason}) — PnL ~${fmtSol(pnl)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`,
     );
@@ -203,6 +214,52 @@ export class Trader {
       peakMultiple: position.peakPrice / position.entryPrice,
       holdSeconds: Math.round((Date.now() - position.openedAt) / 1000),
     });
+  }
+
+  /**
+   * One row per closed position in data/<mode>-trades.csv: token, entry and
+   * exit time and price, exit reason, PnL, liquidity and holders at entry.
+   * Prices are SOL per token (USD per token on paper-only EVM chains); the
+   * exit price is the average over all partial sells.
+   */
+  private writeCsv(position: Position, reason: ExitReason, pnl: number, pnlPct: number): void {
+    try {
+      const file = path.resolve('data', `${this.mode}-trades.csv`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      if (!fs.existsSync(file)) {
+        fs.writeFileSync(file, 'token,symbol,chain,entry_time,entry_price,exit_time,exit_price,exit_reason,' +
+          'pnl_sol,pnl_pct,peak_multiple,liquidity_usd_at_entry,holders_at_entry\n');
+      }
+      const tokensUi = rawToUi(BigInt(position.tokensRawInitial), position.tokenDecimals);
+      const exitPrice = tokensUi > 0 ? position.solReceived / tokensUi : 0;
+      const cell = (v: unknown) => {
+        const text = v === undefined || v === null ? '' : String(v);
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      };
+      const row = [
+        position.mint, position.symbol, position.chain ?? 'solana',
+        new Date(position.openedAt).toISOString(), position.entryPrice,
+        new Date(position.closedAt ?? Date.now()).toISOString(), exitPrice, reason,
+        pnl.toFixed(6), pnlPct.toFixed(2), (position.peakPrice / position.entryPrice).toFixed(3),
+        position.entryLiquidityUsd !== undefined ? Math.round(position.entryLiquidityUsd) : '',
+        position.holdersAtEntry ?? '',
+      ].map(cell).join(',');
+      fs.appendFileSync(file, row + '\n');
+    } catch (err) {
+      log.warn(`could not write trade CSV: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Total capital: free SOL (paper balance or wallet balances) plus the cost
+   * of open positions. Used for the daily loss limit.
+   */
+  async capitalSol(): Promise<number> {
+    const invested = this.store.open.reduce((sum, p) => sum + p.solSpent - p.solReceived, 0);
+    if (this.paper) return this.paper.account.balanceSol + invested;
+    let free = 0;
+    for (const wallet of this.wallets.all) free += await this.rpc.getSolBalance(wallet.pubkey);
+    return free + invested;
   }
 
   /** DexScreener chain id for a configured scanner chain name. */
@@ -286,6 +343,7 @@ export class Trader {
   private async liveSell(
     position: Position,
     sellRaw: bigint,
+    urgent: boolean,
   ): Promise<{ soldRaw: bigint; solReceived: number | null; signature: string } | null> {
     const wallet = this.wallets.byPubkey(position.wallet);
     if (!wallet) {
@@ -297,7 +355,7 @@ export class Trader {
 
     // sendAndConfirm re-broadcasts the same signed transaction. Do not
     // rebuild a sell after an ambiguous confirmation timeout.
-    const signature = await this.executeSell(wallet, position, sellRaw);
+    const signature = await this.executeSell(wallet, position, sellRaw, urgent);
 
     let balanceAfter = balanceBefore;
     for (let i = 0; i < 10; i++) {
@@ -343,8 +401,15 @@ export class Trader {
     wallet: ManagedWallet,
     position: Position,
     sellRaw: bigint,
+    urgent: boolean,
   ): Promise<string> {
-    const entry = this.config.entry;
+    const entry = urgent
+      ? {
+          ...this.config.entry,
+          slippageBps: Math.max(this.config.entry.slippageBps, this.config.exit.emergencySlippageBps),
+          priorityFeeSol: Math.max(this.config.entry.priorityFeeSol, this.config.exit.emergencyPriorityFeeSol),
+        }
+      : this.config.entry;
     if (position.venue === 'pump') {
       // A full exit sweeps the balance; a float UI amount can round above it.
       const amount = sellRaw >= BigInt(position.tokensRawRemaining)

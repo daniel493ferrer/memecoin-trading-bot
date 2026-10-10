@@ -11,8 +11,12 @@ import { CopyTrader, type LeaderTrade } from './discovery/copytrader.js';
 import { WalletHunter } from './discovery/wallethunter.js';
 import { LeaderBook } from './leaders.js';
 import { ClusterTracker, TELEGRAM_VOTER, clusterDecision } from './consensus.js';
-import { TelegramWatcher, type Mention } from './discovery/telegram.js';
+import { TelegramWatcher, sessionPath, type Mention } from './discovery/telegram.js';
+import fs from 'node:fs';
 import { GraduationWatcher } from './discovery/graduation.js';
+import { CreatorWatch, lookupCreator } from './creatorwatch.js';
+import { uniqueBuyersGrowth } from './discovery/gecko.js';
+import { appendDailySummary, dayStartCapital, formatSummary, summarizeDay } from './summary.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -92,6 +96,9 @@ async function main(): Promise<void> {
   const pumpEngine = new PumpPortalEngine(rpc, config.endpoints.pumpPortalTrade);
   const jupiterEngine = new JupiterEngine(rpc, config.endpoints.jupiterBase);
   const safety = new SafetyChecker(rpc, config.filters, config.scanner.chains);
+  safety.sellSimulation = (mint) => jupiterEngine.sellSimulation(
+    mint, 10_000_000n, config.filters.maxRoundTripLossPct, config.entry.slippageBps,
+  );
 
   // Paper positions live in their own file so they never mix with real ones.
   const store = new PositionStore(live ? 'positions.json' : 'paper-positions.json');
@@ -124,7 +131,15 @@ async function main(): Promise<void> {
     log.ok(`hunter: new leader ${short(address)} — bought early in ${r?.hits.length ?? 0} winners; copying it now`);
     if (config.copy.enabled) copier.addLeader(address, `auto-${address.slice(0, 4)}`);
   });
+  const creators = new CreatorWatch(rpc, (mint, creator) => {
+    for (const p of store.open) {
+      if (p.mint !== mint) continue;
+      log.warn(`${p.symbol}: creator ${short(creator)} is selling — emergency exit`);
+      void monitor.exitNow(p, 'dev-sell', true);
+    }
+  });
   trader.onClose = (position, pnlSol) => {
+    creators.unwatch(position.mint);
     if (!position.leader) return;
     if (leaders.recordResult(position.leader, pnlSol, position.solSpent)) {
       log.warn(`copy: leader ${short(position.leader)} loses money when copied — dropping it`);
@@ -272,6 +287,15 @@ async function main(): Promise<void> {
       if (pnlToday <= -config.risk.maxDailyLossSol) {
         return skip(`daily loss limit reached (${fmtSol(pnlToday)} today) — exits keep running`);
       }
+      if (config.risk.maxDailyLossPct > 0) {
+        const startCapital = dayStartCapital(await trader.capitalSol());
+        const limit = startCapital * (config.risk.maxDailyLossPct / 100);
+        if (pnlToday <= -limit) {
+          return skip(
+            `daily loss limit reached (${fmtSol(pnlToday)} today, limit ${config.risk.maxDailyLossPct}% = ${fmtSol(limit)}) — exits keep running`,
+          );
+        }
+      }
 
       const cooldownMs =
         config.entry.buyCooldownSeconds * 1_000 - (Date.now() - lastBuyAt);
@@ -287,10 +311,22 @@ async function main(): Promise<void> {
 
       await record('buy', buyReason);
       log.info(`entering ${candidate.symbol} (${short(candidate.mint)}) from ${candidate.source} — ${buyReason}`);
+      if (!candidate.chain || candidate.chain === 'solana') {
+        candidate.holders = (await rpc.countHolders(candidate.mint)) ?? undefined;
+      }
       const position = await trader.buy(candidate, report.decimals);
       if (position) {
         lastBuyAt = Date.now();
         monitor.track(position);
+        // Emergency exit if the token's creator starts selling.
+        if (config.exit.exitOnDevSell && position.venue === 'amm' && (!position.chain || position.chain === 'solana')) {
+          void lookupCreator(position.mint).then((creator) => {
+            if (!creator || position.status !== 'open') return;
+            position.creator = creator;
+            store.update(position);
+            creators.watch(position.mint, creator);
+          });
+        }
       }
     } finally {
       buying = false;
@@ -409,7 +445,7 @@ async function main(): Promise<void> {
       `${metrics.buys5m}/${metrics.sells5m} buys/sells, $${Math.round(metrics.volume5mUsd).toLocaleString()} vol 5m, ` +
       `$${Math.round(metrics.liquidityUsd).toLocaleString()} liq on ${metrics.dexId}`;
     const record = (decision: 'buy' | 'reject', reason: string) =>
-      appendJsonl(scannerLog, { ts: new Date().toISOString(), mint: candidate.mint, symbol: candidate.symbol, decision, reason, ...metrics });
+      appendJsonl(scannerLog, { ts: new Date().toISOString(), symbol: candidate.symbol, decision, reason, ...metrics });
     if (rejected) {
       void record('reject', `prefilter rejected: ${rejected}`);
       return;
@@ -419,8 +455,21 @@ async function main(): Promise<void> {
       void record('reject', `live trading not supported on ${candidate.chain}`);
       return;
     }
+    candidate.liquidityUsd = metrics.liquidityUsd;
     log.info(`[${candidate.chain ?? 'solana'}] ${candidate.symbol} (${short(candidate.mint)}) pumping: ${summary}`);
-    void enterPosition(candidate, `scanner: ${summary}`, record).catch((err) =>
+    void (async () => {
+      // Launch mode: unique buyers must be growing (GeckoTerminal pool stats);
+      // when unavailable the scanner's buy-count growth check stands in.
+      if (config.scanner.mode === 'launch' && config.scanner.launch.requireBuyerGrowth && metrics.pairAddress) {
+        const buyers = await uniqueBuyersGrowth(metrics.pairAddress);
+        if (buyers && buyers.now <= buyers.before) {
+          await record('reject', `unique buyers not growing (${buyers.now} vs ${buyers.before.toFixed(0)})`);
+          log.info(`skip ${candidate.symbol}: unique buyers not growing (${buyers.now} vs ${buyers.before.toFixed(0)} before)`);
+          return;
+        }
+      }
+      await enterPosition(candidate, `scanner: ${summary}`, record);
+    })().catch((err) =>
       log.error(`scanner entry error for ${candidate.symbol}: ${(err as Error).message}`),
     );
   });
@@ -490,19 +539,18 @@ async function main(): Promise<void> {
   if (config.scanner.enabled) {
     scanner.start();
   }
+  // Telegram: influencer channels (when copy trading uses them) and alerts
+  // to your Saved Messages. Needs TELEGRAM_API_ID/HASH and a saved login.
+  if (Number(process.env.TELEGRAM_API_ID) && process.env.TELEGRAM_API_HASH && fs.existsSync(sessionPath(config.influencers))) {
+    const readChannels = config.copy.enabled && config.influencers.enabled;
+    await telegram.start(readChannels).catch((err) => log.error(`Telegram failed: ${(err as Error).message}`));
+  } else if (config.copy.enabled && config.influencers.enabled) {
+    log.warn('influencers: add TELEGRAM_API_ID/HASH to .env and run `npm run telegram-login` to read Telegram channels');
+  }
   if (config.copy.enabled) {
     copier.start((address) => leaders.isDisabled(address));
     // Leaders found by the hunter in earlier runs.
     for (const r of leaders.active) copier.addLeader(r.address, `auto-${r.address.slice(0, 4)}`);
-    if (config.influencers.enabled) {
-      if (!Number(process.env.TELEGRAM_API_ID) || !process.env.TELEGRAM_API_HASH) {
-        log.warn('influencers: add TELEGRAM_API_ID and TELEGRAM_API_HASH to .env to read Telegram channels');
-      } else if (config.influencers.channels.length === 0) {
-        log.warn('influencers: no channels in config.json (influencers.channels)');
-      } else {
-        await telegram.start().catch((err) => log.error(`influencers: Telegram failed: ${(err as Error).message}`));
-      }
-    }
     log.ok(`copy trading: ${copier.watchedCount} leader wallet(s) in total` +
       (config.hunter.enabled ? ' — the hunter adds more as it finds them' : ''));
   }
@@ -520,6 +568,22 @@ async function main(): Promise<void> {
     const { messages, watched } = pumpStream.takeTradeMessageStats();
     log.info(`PumpPortal usage: ${messages} trade messages in the last 10 min, ${watched} token(s) subscribed now`);
   }, 10 * 60_000);
+
+  // Sell failures that persist reach the user on Telegram (Saved Messages).
+  monitor.onAlert = (message) => void telegram.notify(`⚠️ memecoin bot: ${message}`);
+
+  // End-of-day summary (UTC days) from the trade CSV.
+  const tradesCsv = `data/${live ? 'live' : 'paper'}-trades.csv`;
+  let summaryDay = new Date().toISOString().slice(0, 10);
+  setInterval(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today === summaryDay) return;
+    const summary = summarizeDay(tradesCsv, summaryDay);
+    appendDailySummary(summary);
+    log.ok(`daily summary — ${formatSummary(summary)}`);
+    void telegram.notify(`📊 ${formatSummary(summary)}`);
+    summaryDay = today;
+  }, 60_000);
 
   // Periodic status line so long sessions stay legible.
   setInterval(() => {
@@ -542,6 +606,7 @@ async function main(): Promise<void> {
     scanner.stop();
     await copier.stop();
     await telegram.stop();
+    await creators.stop();
     pumpStream.stop();
     await raydium.stop();
     store.save();

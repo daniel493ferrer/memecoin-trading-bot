@@ -10,6 +10,8 @@ import { short, sleep, MAX_TX_VERSION } from './utils.js';
 /** Helius RPC wrapper: connection factory + reliable transaction landing. */
 export class Rpc {
   readonly connection: Connection;
+  private readonly httpUrl: string;
+  private readonly httpFetch: typeof fetch;
 
   constructor(heliusApiKey: string, maxRequestsPerSecond = 8) {
     const httpUrl = `https://mainnet.helius-rpc.com/?api-key=${heliusApiKey}`;
@@ -25,6 +27,8 @@ export class Rpc {
       if (wait > 0) await sleep(wait);
       return fetch(input, init);
     };
+    this.httpUrl = httpUrl;
+    this.httpFetch = throttledFetch;
     this.connection = new Connection(httpUrl, {
       commitment: 'confirmed',
       wsEndpoint: wsUrl,
@@ -139,6 +143,29 @@ export class Rpc {
       total += BigInt(account.data.parsed.info.tokenAmount.amount as string);
     }
     return total;
+  }
+
+  /**
+   * Number of wallets holding `mint` (Helius DAS getTokenAccounts, one page
+   * of up to 1000). Returns 1000 for "1000 or more", or null if unavailable.
+   */
+  async countHolders(mint: string): Promise<number | null> {
+    try {
+      const res = await this.httpFetch(this.httpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 'holders', method: 'getTokenAccounts',
+          params: { mint, limit: 1000, options: { showZeroBalance: false } },
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const body = await res.json() as { result?: { total?: number; token_accounts?: unknown[] } };
+      return body.result?.total ?? body.result?.token_accounts?.length ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async getSolBalance(owner: PublicKey): Promise<number> {

@@ -20,6 +20,9 @@ export interface TokenCandidate {
   chain?: string;
   /** Leader wallet being copied (copy trading only). */
   leader?: string;
+  /** Pool liquidity when the signal fired, if known. */
+  liquidityUsd?: number;
+  holders?: number;
   discoveredAt: number;
 }
 
@@ -34,6 +37,10 @@ export type ExitReason =
   | 'migration'
   | 'rugged'
   | 'copy-exit'
+  | 'breakeven-stop'
+  | 'stale'
+  | 'volume-fade'
+  | 'liquidity-drop'
   | 'shutdown';
 
 export interface Position {
@@ -70,6 +77,14 @@ export interface Position {
   /** Leader wallet this position copies (copy trading only). */
   leader?: string;
   buySignature: string;
+  /** Raised stop (e.g. to the entry price after the 2x take-profit). */
+  stopPrice?: number;
+  /** When the peak price was last raised (stale-exit timer). */
+  lastPeakAt?: number;
+  entryLiquidityUsd?: number;
+  /** Highest 5-minute volume seen while holding (volume-fade exit). */
+  peakVolume5mUsd?: number;
+  holdersAtEntry?: number;
 }
 
 /** Real-time trade event from the pump.fun data stream. */

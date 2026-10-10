@@ -26,11 +26,17 @@ const PositionSchema = z.object({
   status: z.enum(['open', 'closed']),
   exitReason: z.enum([
     'take-profit', 'stop-loss', 'trailing-stop', 'max-hold',
-    'dev-sell', 'migration', 'rugged', 'copy-exit', 'shutdown',
+    'dev-sell', 'migration', 'rugged', 'copy-exit', 'breakeven-stop', 'stale',
+    'volume-fade', 'liquidity-drop', 'shutdown',
   ]).optional(),
   buySignature: z.string().min(1),
   chain: z.string().optional(),
   leader: z.string().optional(),
+  stopPrice: z.number().optional(),
+  lastPeakAt: z.number().optional(),
+  entryLiquidityUsd: z.number().optional(),
+  peakVolume5mUsd: z.number().optional(),
+  holdersAtEntry: z.number().optional(),
 });
 
 /**

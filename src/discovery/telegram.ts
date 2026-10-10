@@ -61,7 +61,8 @@ export class TelegramWatcher extends EventEmitter {
     super();
   }
 
-  async start(): Promise<void> {
+  /** Connect; with `readChannels` also watch the configured channels. */
+  async start(readChannels = true): Promise<void> {
     const file = sessionPath(this.cfg);
     if (!fs.existsSync(file)) {
       log.error('influencers: no Telegram login yet — run `npm run telegram-login` once, then restart');
@@ -72,7 +73,7 @@ export class TelegramWatcher extends EventEmitter {
     this.client.setLogLevel?.('error' as never);
     await this.client.connect();
 
-    for (const channel of this.cfg.channels) {
+    for (const channel of readChannels ? this.cfg.channels : []) {
       try {
         const stop = this.client.updates.watch(channel, (update: { message?: { message?: string } }) => {
           const text = update.message?.message ?? '';
@@ -85,7 +86,16 @@ export class TelegramWatcher extends EventEmitter {
         log.warn(`influencers: cannot watch ${channel}: ${(err as Error).message}`);
       }
     }
-    log.ok(`influencers: watching ${this.stops.length} Telegram channel(s)`);
+    log.ok(`Telegram connected — watching ${this.stops.length} channel(s), alerts go to your Saved Messages`);
+  }
+
+  /** Send a message to the user's own Saved Messages; silently skipped when not connected. */
+  async notify(message: string): Promise<void> {
+    try {
+      await this.client?.sendMessage('me', { message });
+    } catch {
+      // Alerts are best-effort.
+    }
   }
 
   async stop(): Promise<void> {

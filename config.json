@@ -10,7 +10,7 @@
     }
   },
   "copy": {
-    "enabled": true,
+    "enabled": false,
     "wallets": [
       {
         "address": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f",
@@ -28,7 +28,7 @@
     "consensusWindowSeconds": 300
   },
   "influencers": {
-    "enabled": true,
+    "enabled": false,
     "channels": [
       "SolanaMemeCoinss",
       "solana100xcall",
@@ -38,7 +38,7 @@
     "sessionFile": "data/telegram.session"
   },
   "hunter": {
-    "enabled": true,
+    "enabled": false,
     "minRun6hPct": 300,
     "minLiquidityUsd": 30000,
     "minMultiple": 3,
@@ -49,7 +49,7 @@
     "pruneAfterTrades": 4
   },
   "graduation": {
-    "enabled": true,
+    "enabled": false,
     "baselineDelaySeconds": 60,
     "waitMinutes": 3,
     "maxDropFromGraduationPct": 15,
@@ -61,7 +61,13 @@
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
-    "mode": "graduated",
+    "mode": "launch",
+    "launch": {
+      "maxAgeMinutes": 30,
+      "minPriceChange5mPct": 40,
+      "requireVolumeGrowth": true,
+      "requireBuyerGrowth": true
+    },
     "graduated": {
       "dexIds": [
         "pumpswap"
@@ -90,7 +96,7 @@
         "gecko": "solana"
       }
     ],
-    "minLiquidityUsd": 0,
+    "minLiquidityUsd": 10000,
     "minAgeMinutes": 0,
     "maxAgeHours": 0,
     "maxMarketCapUsd": 20000000,
@@ -115,7 +121,8 @@
     "minInitialLiquiditySol": 5,
     "requireMintAuthorityRevoked": true,
     "requireFreezeAuthorityRevoked": true,
-    "maxTop10HolderPct": 30
+    "maxTop10HolderPct": 30,
+    "maxRoundTripLossPct": 25
   },
   "observation": {
     "enabled": true,
@@ -143,12 +150,12 @@
     "name": "breakout"
   },
   "entry": {
-    "reservePct": 25,
-    "positionPctOfOperatingCapital": 33.33,
+    "reservePct": 0,
+    "positionPctOfOperatingCapital": 1,
     "maxPositionSol": 1000,
     "slippageBps": 2000,
     "priorityFeeSol": 0.0007,
-    "maxOpenPositions": 3,
+    "maxOpenPositions": 5,
     "buyCooldownSeconds": 15,
     "routeTimeoutSeconds": 45
   },
@@ -156,28 +163,61 @@
     "takeProfits": [
       {
         "multiple": 2,
-        "sellPct": 50
+        "sellPct": 50,
+        "ofOriginal": true,
+        "moveStopToEntry": true
+      },
+      {
+        "multiple": 5,
+        "sellPct": 25,
+        "ofOriginal": true
+      },
+      {
+        "multiple": 10,
+        "sellPct": 15,
+        "ofOriginal": true
       }
     ],
-    "stopLossPct": 15,
+    "stopLossPct": 25,
     "trailingStop": {
       "enabled": true,
       "activateAtMultiple": 1.5,
-      "trailPct": 25
+      "trailPct": 30
     },
-    "maxHoldSeconds": 14400,
+    "trailingTiers": [
+      {
+        "fromMultiple": 0,
+        "trailPct": 30
+      },
+      {
+        "fromMultiple": 5,
+        "trailPct": 20
+      },
+      {
+        "fromMultiple": 10,
+        "trailPct": 15
+      }
+    ],
+    "staleMinutes": 40,
+    "volumeExitPct": 30,
+    "liquidityDropPct": 30,
+    "emergencySlippageBps": 2500,
+    "emergencyPriorityFeeSol": 0.005,
+    "sellRetries": 1,
+    "maxHoldSeconds": 0,
     "exitOnDevSell": true,
     "sellOnMigration": false,
-    "priceCheckIntervalMs": 4000
+    "priceCheckIntervalMs": 1000
   },
   "risk": {
-    "maxDailyLossSol": 0.25
+    "maxDailyLossSol": 1000,
+    "maxDailyLossPct": 10
   },
   "rpc": {
     "maxRequestsPerSecond": 8
   },
   "paper": {
-    "startingBalanceSol": 1,
+    "startingBalanceSol": 10,
     "feePct": 1.25,
     "extraSlippagePct": 3
   },

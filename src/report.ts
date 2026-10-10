@@ -5,6 +5,7 @@
  *   npm run report
  */
 import fs from 'node:fs';
+import { formatSummary, summarizeDay } from './summary.js';
 
 function readJsonl<T>(file: string): T[] {
   if (!fs.existsSync(file)) return [];
@@ -166,4 +167,16 @@ if (fs.existsSync('paper-state.json')) {
   const state = JSON.parse(fs.readFileSync('paper-state.json', 'utf8')) as { balanceSol: number };
   section('Paper account');
   console.log(`balance ${num(state.balanceSol, 4)} SOL`);
+}
+
+// Daily summaries from the trade CSVs (UTC days).
+for (const mode of ['paper', 'live']) {
+  const file = `data/${mode}-trades.csv`;
+  if (!fs.existsSync(file)) continue;
+  section(`Daily summary — ${mode}`);
+  const days = new Set(
+    fs.readFileSync(file, 'utf8').split('\n').slice(1)
+      .map((l) => l.split(',')[5]?.slice(0, 10)).filter((d): d is string => Boolean(d)),
+  );
+  for (const day of [...days].sort().slice(-7)) console.log(formatSummary(summarizeDay(file, day)));
 }

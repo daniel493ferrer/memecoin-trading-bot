@@ -7,6 +7,7 @@ import type { TokenCandidate } from '../types.js';
 /** Market snapshot of one token's most liquid pair (DexScreener). */
 export interface ScanMetrics {
   chain: string;
+  mint: string;
   pairAddress: string;
   dexId: string;
   priceUsd: number;
@@ -18,6 +19,7 @@ export interface ScanMetrics {
   priceChange6hPct: number;
   buys5m: number;
   sells5m: number;
+  buys1h: number;
   volume5mUsd: number;
   volume1hUsd: number;
 }
@@ -77,6 +79,7 @@ export class MarketScanner extends EventEmitter {
   /** "chain:address" keys by last time a GeckoTerminal list included them. */
   private geckoCache = new Map<string, number>();
   private loggedChains = false;
+  readonly history = new WindowHistory();
 
   constructor(private readonly cfg: BotConfig['scanner']) {
     super();
@@ -129,6 +132,7 @@ export class MarketScanner extends EventEmitter {
 
         for (const [mint, pair] of this.bestPairs(pairs, chain.dexscreener)) {
           const metrics = toMetrics(pair, chain.name);
+          this.history.record(metrics);
           // Every looked-up token, for consumers such as the wallet hunter.
           this.emit('snapshot', mint, metrics, pair.baseToken?.symbol ?? short(mint));
           if (this.rejectReason(metrics)) continue;
@@ -245,6 +249,7 @@ export class MarketScanner extends EventEmitter {
   rejectReason(m: ScanMetrics): string | null {
     const c = this.cfg;
     if (c.mode === 'graduated') return this.graduatedReason(m);
+    if (c.mode === 'launch') return this.launchReason(m);
     if (m.liquidityUsd < c.minLiquidityUsd) return 'liquidity too low';
     // Survivors only: most launches die in their first hour.
     if (m.ageMinutes < c.minAgeMinutes) return 'token too young';
@@ -267,6 +272,22 @@ export class MarketScanner extends EventEmitter {
 
 
   /** Warn at most once every 10 minutes per source. */
+  /**
+   * Launch mode: a token under maxAgeMinutes old, up minPriceChange5mPct in
+   * 5 minutes, trading more volume and with more buyers than in the 5
+   * minutes before.
+   */
+  private launchReason(m: ScanMetrics): string | null {
+    const l = this.cfg.launch;
+    if (m.liquidityUsd < this.cfg.minLiquidityUsd) return 'liquidity too low';
+    if (m.ageMinutes > l.maxAgeMinutes) return 'too old';
+    if (m.priceChange5mPct < l.minPriceChange5mPct) return '5m rise too small';
+    const prev = this.history.previousWindow(m);
+    if (l.requireVolumeGrowth && m.volume5mUsd <= prev.volume5mUsd) return 'volume not growing';
+    if (l.requireBuyerGrowth && m.buys5m <= prev.buys5m) return 'buyers not growing';
+    return null;
+  }
+
   /**
    * Graduated mode: pump.fun tokens already trading on PumpSwap, small caps
    * a few hours old, with live volume and buyers ahead right now.
@@ -317,6 +338,7 @@ export function toMetrics(pair: DexPair, chain = 'solana'): ScanMetrics {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
   return {
     chain,
+    mint: pair.baseToken?.address ?? '',
     pairAddress: pair.pairAddress ?? '',
     dexId: pair.dexId ?? '?',
     priceUsd: num(pair.priceUsd),
@@ -328,7 +350,45 @@ export function toMetrics(pair: DexPair, chain = 'solana'): ScanMetrics {
     priceChange6hPct: num(pair.priceChange?.h6),
     buys5m: num(pair.txns?.m5?.buys),
     sells5m: num(pair.txns?.m5?.sells),
+    buys1h: num(pair.txns?.h1?.buys),
     volume5mUsd: num(pair.volume?.m5),
     volume1hUsd: num(pair.volume?.h1),
   };
+}
+
+/**
+ * Remembers each token's rolling 5-minute volume and buy count across scans
+ * so the current 5 minutes can be compared with the 5 minutes before.
+ */
+export class WindowHistory {
+  private samples = new Map<string, Array<{ at: number; volume5mUsd: number; buys5m: number }>>();
+
+  record(m: ScanMetrics, now = Date.now()): void {
+    if (!m.mint) return;
+    const list = this.samples.get(m.mint) ?? [];
+    list.push({ at: now, volume5mUsd: m.volume5mUsd, buys5m: m.buys5m });
+    while (list.length > 0 && now - list[0].at > 12 * 60_000) list.shift();
+    this.samples.set(m.mint, list);
+    if (this.samples.size > 20_000) {
+      const oldest = this.samples.keys().next().value;
+      if (oldest) this.samples.delete(oldest);
+    }
+  }
+
+  /**
+   * Volume and buys of the 5 minutes before the current window: the sample
+   * taken 4-6 minutes ago when the scanner has one, otherwise the average
+   * 5-minute slice of the token's earlier life from its hourly totals.
+   */
+  previousWindow(m: ScanMetrics, now = Date.now()): { volume5mUsd: number; buys5m: number } {
+    const old = (this.samples.get(m.mint) ?? []).find((s) => now - s.at >= 4 * 60_000 && now - s.at <= 6 * 60_000);
+    if (old) return { volume5mUsd: old.volume5mUsd, buys5m: old.buys5m };
+    const earlierMinutes = Math.min(m.ageMinutes, 60) - 5;
+    if (earlierMinutes <= 0) return { volume5mUsd: 0, buys5m: 0 }; // nothing traded before this window
+    const slices = earlierMinutes / 5;
+    return {
+      volume5mUsd: Math.max(0, m.volume1hUsd - m.volume5mUsd) / slices,
+      buys5m: Math.max(0, m.buys1h - m.buys5m) / slices,
+    };
+  }
 }
