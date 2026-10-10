@@ -14,7 +14,7 @@ import { CandidateObserver } from './observation.js';
 import { CandidateOutcomeTracker } from './outcomes.js';
 import { createStrategy } from './strategies/index.js';
 import { CandidateRecorder } from './recorder.js';
-import type { TokenCandidate } from './types.js';
+import type { TokenCandidate, WalletTradeEvent } from './types.js';
 import { fmtSol, short, sleep } from './utils.js';
 
 const BANNER = `
@@ -46,6 +46,7 @@ async function main(): Promise<void> {
     newTokens: config.discovery.pumpfun.enabled && config.discovery.pumpfun.snipeNewTokens,
     migrations: true,
     apiKey: env.pumpPortalApiKey,
+    trackedWallets: config.copyTrading.enabled ? config.copyTrading.wallets : [],
   });
   const raydium = new RaydiumListener(rpc);
   const monitor = new ExitMonitor(store, trader, jupiterEngine, pumpStream, config);
@@ -156,6 +157,24 @@ async function main(): Promise<void> {
       return;
     }
 
+    await enterPosition(candidate, () =>
+      recorder.record(
+        candidate,
+        observation,
+        'buy',
+        `strategy ${strategy.name}: ${decision.reason}`,
+      ),
+    );
+  }
+
+  /**
+   * Shared tail of every entry path: wait for the entry lock and cooldown,
+   * re-check portfolio gates, re-run safety immediately before signing, buy.
+   */
+  async function enterPosition(
+    candidate: TokenCandidate,
+    beforeBuy: () => Promise<void>,
+  ): Promise<void> {
     // Multiple candidates may finish observation together. Wait for the current
     // buy instead of silently discarding a validated opportunity.
     while (buying) {
@@ -175,12 +194,7 @@ async function main(): Promise<void> {
     if (store.openCount >= config.entry.maxOpenPositions) return;
     if (store.hasMint(candidate.mint)) return;
 
-    await recorder.record(
-      candidate,
-      observation,
-      'buy',
-      `strategy ${strategy.name}: ${decision.reason}`,
-    );
+    await beforeBuy();
 
     buying = true;
     try {
@@ -206,6 +220,54 @@ async function main(): Promise<void> {
     }
   }
 
+  // ------------------------------------------------------------ copy trading
+
+  const copyCfg = config.copyTrading;
+  const copiedMints = new Set<string>();
+  /** mint -> (tracked wallet -> time of its latest qualifying buy) */
+  const trackedBuys = new Map<string, Map<string, number>>();
+
+  function onWalletTrade(ev: WalletTradeEvent): void {
+    if (ev.txType !== 'buy' || ev.solAmount < copyCfg.minTrackedBuySol) return;
+    if (copiedMints.has(ev.mint) || store.hasMint(ev.mint)) return;
+
+    const windowMs = copyCfg.confirmationWindowSeconds * 1_000;
+    const buyers = trackedBuys.get(ev.mint) ?? new Map<string, number>();
+    buyers.set(ev.wallet, ev.timestamp);
+    for (const [w, t] of buyers) if (ev.timestamp - t > windowMs) buyers.delete(w);
+    trackedBuys.set(ev.mint, buyers);
+    if (trackedBuys.size > 5_000) {
+      const oldest = trackedBuys.keys().next().value;
+      if (oldest) trackedBuys.delete(oldest);
+    }
+
+    log.info(
+      `signal: tracked wallet ${short(ev.wallet)} bought ${fmtSol(ev.solAmount)} of ${short(ev.mint)} ` +
+        `(${buyers.size}/${copyCfg.minWalletsToConfirm} wallets)`,
+    );
+    if (buyers.size < copyCfg.minWalletsToConfirm) return;
+    if (store.openCount >= config.entry.maxOpenPositions) return;
+
+    copiedMints.add(ev.mint);
+    trackedBuys.delete(ev.mint);
+    const candidate: TokenCandidate = {
+      mint: ev.mint,
+      symbol: short(ev.mint),
+      name: 'copy-trade signal',
+      source: 'copy-trade',
+      venue: ev.venue,
+      discoveredAt: Date.now(),
+    };
+    void enterPosition(candidate, async () => {
+      log.info(`copying ${[...buyers.keys()].map(short).join(', ')} into ${candidate.symbol}`);
+    })
+      .catch((err: unknown) => {
+        log.error(`copy-trade entry failed for ${candidate.symbol}: ${(err as Error).message}`);
+      });
+  }
+
+  if (copyCfg.enabled) pumpStream.on('walletTrade', onWalletTrade);
+
   pumpStream.on('newToken', (c: TokenCandidate) => {
     if (config.discovery.pumpfun.snipeNewTokens) void onCandidate(c);
   });
@@ -230,6 +292,7 @@ async function main(): Promise<void> {
 
   if (
     config.discovery.pumpfun.enabled ||
+    config.copyTrading.enabled ||
     (config.observation.enabled && config.discovery.raydium.enabled) ||
     store.open.some((p) => p.venue === 'pump')
   ) {

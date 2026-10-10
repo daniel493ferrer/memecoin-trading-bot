@@ -1,7 +1,7 @@
 /** Where a token currently trades. Determines which execution engine we use. */
 export type Venue = 'pump' | 'amm';
 
-export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium';
+export type CandidateSource = 'pumpfun' | 'pumpfun-migration' | 'raydium' | 'copy-trade';
 
 /** A freshly discovered token that passed (or is about to pass) filtering. */
 export interface TokenCandidate {
@@ -80,4 +80,15 @@ export interface SafetyReport {
   ok: boolean;
   reasons: string[];
   decimals: number;
+}
+
+/** A buy or sell made by one of the tracked (copy-trading) wallets. */
+export interface WalletTradeEvent {
+  wallet: string;
+  mint: string;
+  txType: 'buy' | 'sell';
+  solAmount: number;
+  /** Where the tracked wallet traded: bonding curve or an AMM pool. */
+  venue: Venue;
+  timestamp: number;
 }

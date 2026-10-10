@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { log } from '../logger.js';
 import { short, sleep } from '../utils.js';
-import type { PumpTradeEvent, TokenCandidate } from '../types.js';
+import type { PumpTradeEvent, TokenCandidate, WalletTradeEvent } from '../types.js';
 
 /**
  * Real-time pump.fun feed via the PumpPortal data websocket.
@@ -11,6 +11,7 @@ import type { PumpTradeEvent, TokenCandidate } from '../types.js';
  *   'newToken'  (candidate: TokenCandidate)
  *   'migration' (mint: string)
  *   'trade'     (event: PumpTradeEvent)
+ *   'walletTrade' (event: WalletTradeEvent) — only for opts.trackedWallets
  */
 export class PumpFunStream extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -19,6 +20,7 @@ export class PumpFunStream extends EventEmitter {
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private reconnectDelayMs = 1_000;
+  private readonly trackedSet: Set<string>;
 
   constructor(
     private readonly wsUrl: string,
@@ -26,9 +28,11 @@ export class PumpFunStream extends EventEmitter {
       newTokens: boolean;
       migrations: boolean;
       apiKey: string;
+      trackedWallets?: string[];
     },
   ) {
     super();
+    this.trackedSet = new Set(opts.trackedWallets ?? []);
   }
 
   start(): void {
@@ -113,6 +117,12 @@ export class PumpFunStream extends EventEmitter {
         this.send({ method: 'subscribeMigration' });
       }
 
+      const tracked = this.opts.trackedWallets ?? [];
+      if (tracked.length > 0) {
+        this.send({ method: 'subscribeAccountTrade', keys: tracked });
+        log.info(`following ${tracked.length} tracked wallet(s)`);
+      }
+
       this.subscribedMints.clear();
       this.syncTradeSubscriptions();
     });
@@ -183,6 +193,22 @@ export class PumpFunStream extends EventEmitter {
       }
       log.warn('pump.fun stream message: ' + message);
       return;
+    }
+
+    if (
+      (msg.txType === 'buy' || msg.txType === 'sell') &&
+      msg.mint &&
+      this.trackedSet.has(msg.traderPublicKey)
+    ) {
+      const event: WalletTradeEvent = {
+        wallet: msg.traderPublicKey,
+        mint: msg.mint,
+        txType: msg.txType,
+        solAmount: Number(msg.solAmount ?? 0),
+        venue: msg.pool === 'pump' ? 'pump' : 'amm',
+        timestamp: Date.now(),
+      };
+      this.emit('walletTrade', event);
     }
 
     if (

@@ -52,6 +52,23 @@ const ConfigSchema = z.object({
   strategy: z.object({
     name: z.string().min(1),
   }),
+  copyTrading: z.object({
+    enabled: z.boolean(),
+    /** Public addresses of the wallets whose buys are treated as signals. */
+    wallets: z.array(z.string().min(32)),
+    /** Ignore tracked buys smaller than this (filters dust/test buys). */
+    minTrackedBuySol: z.number().min(0),
+    /** Distinct tracked wallets that must buy the same mint before we enter. */
+    minWalletsToConfirm: z.number().int().min(1),
+    /** Window in which the confirming buys must happen. */
+    confirmationWindowSeconds: z.number().min(1),
+  }).default({
+    enabled: false,
+    wallets: [],
+    minTrackedBuySol: 0.5,
+    minWalletsToConfirm: 1,
+    confirmationWindowSeconds: 60,
+  }),
   entry: z.object({
     reservePct: z.number().min(0).max(90),
     positionPctOfOperatingCapital: z.number().gt(0).max(100),

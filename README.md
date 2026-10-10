@@ -297,3 +297,23 @@ npm run typecheck
 ## License
 
 MIT. You are responsible for wallet security, configuration, and trading losses.
+
+## Copy trading (follow wallet signals)
+
+The bot can follow the buys of wallets you choose. Set in `config.json`:
+
+```json
+"copyTrading": {
+  "enabled": true,
+  "wallets": ["WALLET_ADDRESS_1", "WALLET_ADDRESS_2"],
+  "minTrackedBuySol": 0.5,
+  "minWalletsToConfirm": 2,
+  "confirmationWindowSeconds": 60
+}
+```
+
+- Tracked wallets are public addresses (not private keys), subscribed through PumpPortal `subscribeAccountTrade`.
+- A buy smaller than `minTrackedBuySol` is ignored. Entry happens once `minWalletsToConfirm` distinct tracked wallets buy the same mint inside `confirmationWindowSeconds`.
+- Copy entries skip the observation window and strategy, but still pass the on-chain safety check, the cooldown/max-position gates and the normal exit management (stop loss, trailing stop, etc.).
+- Tracked-wallet sells are not mirrored yet; exits use the configured exit rules.
+- Keep `LIVE_TRADING=false` while validating that signals arrive.

@@ -41,6 +41,13 @@
   "strategy": {
     "name": "momentum"
   },
+  "copyTrading": {
+    "enabled": false,
+    "wallets": [],
+    "minTrackedBuySol": 0.5,
+    "minWalletsToConfirm": 1,
+    "confirmationWindowSeconds": 60
+  },
   "entry": {
     "reservePct": 20,
     "positionPctOfOperatingCapital": 100,
