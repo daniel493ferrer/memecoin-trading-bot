@@ -48,6 +48,16 @@
     "maxLeaders": 15,
     "pruneAfterTrades": 4
   },
+  "graduation": {
+    "enabled": true,
+    "baselineDelaySeconds": 60,
+    "waitMinutes": 5,
+    "maxDropFromGraduationPct": 10,
+    "minLiquidityUsd": 0,
+    "minVolume5mUsd": 5000,
+    "minBuySellRatio5m": 1.2,
+    "maxConcurrent": 30
+  },
   "scanner": {
     "enabled": true,
     "intervalSeconds": 20,
@@ -84,8 +94,8 @@
         "goplusChainId": "4663"
       }
     ],
-    "minLiquidityUsd": 20000,
-    "minAgeMinutes": 120,
+    "minLiquidityUsd": 0,
+    "minAgeMinutes": 0,
     "maxAgeHours": 0,
     "maxMarketCapUsd": 20000000,
     "minPriceChange1hPct": 20,
@@ -153,7 +163,7 @@
         "sellPct": 50
       }
     ],
-    "stopLossPct": 25,
+    "stopLossPct": 15,
     "trailingStop": {
       "enabled": true,
       "activateAtMultiple": 1.5,

@@ -637,3 +637,47 @@ test('manually configured leaders are dropped too when copying them loses', asyn
     process.chdir(cwd);
   }
 });
+
+test('graduation strategy buys tokens that held after graduating, skips dumps', async () => {
+  const { graduationReject } = await import('../src/discovery/graduation.js');
+  const { toMetrics } = await import('../src/discovery/scanner.js');
+  const cfg = makeConfig().graduation;
+  const at = (price: number, buys: number, sells: number, m5: number, vol = 20_000) => toMetrics({
+    chainId: 'solana', baseToken: { address: 'x' }, priceUsd: String(price),
+    txns: { m5: { buys, sells } }, volume: { m5: vol, h1: vol * 3 }, priceChange: { m5, h1: 50 },
+    liquidity: { usd: 40_000 }, marketCap: 120_000, pairCreatedAt: Date.now() - 600_000,
+  });
+  assert.equal(graduationReject(1, at(1.05, 200, 120, 4), cfg), null, 'held +5% with buyers');
+  assert.match(graduationReject(1, at(0.7, 200, 120, 4), cfg)!, /dumped/);
+  assert.match(graduationReject(1, at(1.0, 80, 120, 4), cfg)!, /sellers/);
+  assert.match(graduationReject(1, at(1.0, 200, 120, -6), cfg)!, /falling/);
+  assert.match(graduationReject(1, at(1.0, 200, 120, 4, 1_000), cfg)!, /volume/);
+});
+
+test('graduation watcher: baseline, wait, then signal only when the token held', async () => {
+  const { GraduationWatcher } = await import('../src/discovery/graduation.js');
+  const realFetch = globalThis.fetch;
+  const prices: Record<string, number[]> = { HOLD: [1, 1.1], DUMP: [1, 0.5] };
+  const calls: Record<string, number> = {};
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const mint = String(input).split('/').pop()!;
+    const i = Math.min(calls[mint] = (calls[mint] ?? 0) + 1, 2) - 1;
+    return new Response(JSON.stringify([{
+      chainId: 'solana', baseToken: { address: mint, symbol: mint }, priceUsd: String(prices[mint][i]),
+      txns: { m5: { buys: 150, sells: 90 } }, volume: { m5: 30_000, h1: 60_000 }, priceChange: { m5: 3, h1: 20 },
+      liquidity: { usd: 35_000 }, marketCap: 150_000, pairCreatedAt: Date.now() - 300_000,
+    }]), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const cfg = { ...makeConfig().graduation, baselineDelaySeconds: 0.01, waitMinutes: 0.0005 };
+    const watcher = new GraduationWatcher(cfg);
+    const signals: string[] = [];
+    watcher.on('signal', (mint: string) => signals.push(mint));
+    watcher.onGraduation('HOLD');
+    watcher.onGraduation('DUMP');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(signals, ['HOLD']);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

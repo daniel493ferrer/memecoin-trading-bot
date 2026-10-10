@@ -9,7 +9,6 @@ fuerte ahora mismo**, lo compra y lo vende cuando cae un **20 % desde su
 máximo**. No tiene límite de ganancia: si sigue subiendo, lo mantiene.
 
 **Modo actual: `pullback` (comprar el rebote).** Compra un token solo si:
-- tiene **2 horas de vida o más** y **$20 000+ de liquidez**,
 - **subió +100 % o más en 6 horas** (es un token fuerte),
 - **está corrigiendo**: en la última hora cayó entre **−10 % y −40 %**
   (un descanso, no un desplome),
@@ -24,7 +23,7 @@ corrección de un token que ya demostró fuerza, más barato que el pico.
 El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 
 **Vende así:**
-- **−25 %** desde la compra: corta la pérdida.
+- **−15 %** desde la compra: corta la pérdida.
 - Al llegar a **2x**: vende la **mitad** (recuperas lo invertido; el resto va gratis).
 - Desde **1.5x**, si cae **25 % desde su máximo**: vende el resto. Sin tope de ganancia.
 - A las **4 horas** sale si nada de lo anterior pasó.
@@ -32,6 +31,19 @@ El modo anterior sigue disponible: `config.json` → `scanner.mode: "momentum"`.
 **Dinero:** hasta **3 tokens a la vez**, cada uno con el **25 % del capital**.
 El **25 % restante es reserva** y nunca se usa. Si en un día se pierden
 **0.25 SOL**, deja de comprar hasta el día siguiente (las ventas siguen).
+
+## Tokens graduados
+
+Cuando un token de pump.fun **se gradúa** (completa su curva y pasa a PumpSwap):
+1. El bot **no compra en el momento de graduarse**: ahí venden los primeros.
+2. Toma el precio **1 minuto después** y espera **5 minutos**.
+3. **Compra** solo si en ese tiempo: **no cayó más de 10 %**, **no está cayendo
+   ahora**, hay **más compras que ventas** (1.2 por venta) y **$5 000+ de volumen
+   en 5 min**, y pasa la revisión de seguridad.
+4. Sale con las reglas de siempre.
+
+Los avisos de graduación de PumpPortal son gratis. Todo queda en `data/graduation.jsonl`.
+Se ajusta en `config.json` → `graduation`.
 
 ## Copy trading automático (copiar wallets que ganan)
 

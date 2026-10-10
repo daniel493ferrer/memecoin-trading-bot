@@ -12,6 +12,7 @@ import { WalletHunter } from './discovery/wallethunter.js';
 import { LeaderBook } from './leaders.js';
 import { ClusterTracker, TELEGRAM_VOTER, clusterDecision } from './consensus.js';
 import { TelegramWatcher, type Mention } from './discovery/telegram.js';
+import { GraduationWatcher } from './discovery/graduation.js';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SafetyChecker } from './safety.js';
@@ -428,7 +429,26 @@ async function main(): Promise<void> {
     if (config.discovery.pumpfun.snipeNewTokens) void onCandidate(c);
   });
 
+  const graduation = new GraduationWatcher(config.graduation);
+  graduation.on('signal', (mint: string, symbol: string, reason: string) => {
+    if (store.hasMint(mint)) return;
+    log.info(`graduation: ${symbol} (${short(mint)}) ${reason}`);
+    const record = (decision: 'buy' | 'reject', why: string) => appendJsonl('data/graduation.jsonl', {
+      ts: new Date().toISOString(), mint, symbol, decision, reason: why,
+    });
+    const candidate: TokenCandidate = {
+      mint, symbol, name: symbol, source: 'pumpfun-migration', venue: 'amm', chain: 'solana', discoveredAt: Date.now(),
+    };
+    const rejected = safety.prefilter(candidate);
+    if (rejected) {
+      void record('reject', `prefilter rejected: ${rejected}`);
+      return;
+    }
+    void enterPosition(candidate, `graduation: ${reason}`, record).catch((err) => log.error(`graduation entry error for ${symbol}: ${(err as Error).message}`));
+  });
+
   pumpStream.on('migration', (mint: string) => {
+    if (config.graduation.enabled && !store.hasMint(mint)) graduation.onGraduation(mint);
     // Migration sniping: buy tokens that just graduated (proven demand),
     // unless we already hold them — the monitor handles that case.
     if (!config.discovery.pumpfun.snipeMigrations || store.hasMint(mint)) return;
@@ -458,6 +478,7 @@ async function main(): Promise<void> {
 
   if (
     config.discovery.pumpfun.enabled ||
+    config.graduation.enabled ||
     (config.observation.enabled && config.discovery.raydium.enabled) ||
     store.open.some((p) => p.venue === 'pump')
   ) {

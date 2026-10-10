@@ -72,6 +72,21 @@ export const ConfigSchema = z.object({
     /** Stop copying a leader once this many copied trades net a loss. */
     pruneAfterTrades: z.number().int().min(1).default(4),
   }).default({}),
+  /** Buys pump.fun tokens that graduated to PumpSwap and held their price. */
+  graduation: z.object({
+    enabled: z.boolean().default(false),
+    /** Wait before taking the baseline price (lets DexScreener index the pool). */
+    baselineDelaySeconds: z.number().int().min(10).default(60),
+    /** Minutes to watch after graduating before deciding. */
+    waitMinutes: z.number().min(1).default(5),
+    /** Skip if the price fell more than this since the baseline. */
+    maxDropFromGraduationPct: z.number().min(0).default(10),
+    minLiquidityUsd: z.number().min(0).default(0),
+    minVolume5mUsd: z.number().min(0).default(5_000),
+    minBuySellRatio5m: z.number().min(0).default(1.2),
+    /** Graduations followed at the same time. */
+    maxConcurrent: z.number().int().min(1).default(30),
+  }).default({}),
   /** Market scanner: buys tokens that are pumping now, at any age. */
   scanner: z.object({
     enabled: z.boolean().default(false),
@@ -269,6 +284,7 @@ export function loadConfig(): { config: BotConfig; env: Env } {
   const liveTrading = liveTradingRaw === 'true';
 
   const pumpPortalApiKey = process.env.PUMPPORTAL_API_KEY?.trim() ?? '';
+  // Migration (graduation) events are free; only per-token trades need a key.
   if (!pumpPortalApiKey && parsed.data.discovery.pumpfun.enabled) {
     throw new Error(
       'PUMPPORTAL_API_KEY is missing. PumpPortal subscribeTokenTrade requires an API key for live trade observation.',

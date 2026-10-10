@@ -120,7 +120,7 @@ export class PumpFunStream extends EventEmitter {
     if (this.stopped) return;
 
     const url = new URL(this.wsUrl);
-    url.searchParams.set('api-key', this.opts.apiKey);
+    if (this.opts.apiKey) url.searchParams.set('api-key', this.opts.apiKey);
     const ws = new WebSocket(url);
     this.ws = ws;
 
